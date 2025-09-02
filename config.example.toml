@@ -1,0 +1,40 @@
+# Example configuration with image rotation and weights
+
+[global]
+name = "FictusVNC"
+show_ip = false
+
+[server.random_server]
+listen = "0.0.0.0:5900"
+server_name = "Random Rotation Server"
+rotation_mode = "random"
+images = [
+  { path = "desktop_normal.png", weight = 50 },
+  { path = "desktop_work.png", weight = 30 },
+  { path = "desktop_error.png", weight = 5 },
+  { path = "desktop_maintenance.png", weight = 15 },
+]
+
+[server.boot_sequence]
+listen = "0.0.0.0:5902"
+server_name = "Boot Sequence"
+rotation_mode = "sequential"
+images = [
+  { path = "boot_bios.png" },
+  { path = "boot_loading.png" },
+  { path = "login_screen.png" },
+  { path = "desktop_ready.png" },
+]
+
+# Port range example - runs on multiple ports with same image
+[server.multi_port]
+listen = "0.0.0.0"
+start_port = 5910
+end_port = 5915
+server_name = "Multi-Port Server"
+image = "default.png"
+
+[server.static_server]
+listen = "0.0.0.0:5903"
+server_name = "Static Server"
+image = "default.png"

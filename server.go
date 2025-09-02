@@ -11,12 +11,17 @@ import (
 	"time"
 )
 
-func runVNCServer(addr string, f *fb, serverName string, showIP bool) error {
+func runVNCServerWithRotator(addr string, rotator *ImageRotator, serverName string, showIP bool) error {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("failed to listen on %s: %w", addr, err)
 	}
-	log.Printf("[%s] Serving PNG %dx%d on %s", serverName, f.w, f.h, addr)
+
+	// Get first image for logging
+	firstImg := rotator.GetImage()
+	log.Printf("[%s] Serving %d images with rotation on %s", serverName, len(rotator.images), addr)
+	log.Printf("[%s] First image: %dx%d", serverName, firstImg.w, firstImg.h)
+
 	for {
 		c, err := ln.Accept()
 		if err != nil {
@@ -24,15 +29,19 @@ func runVNCServer(addr string, f *fb, serverName string, showIP bool) error {
 			time.Sleep(time.Second)
 			continue
 		}
-		go serve(c, f, serverName, showIP)
+		go serveWithRotator(c, rotator, serverName, showIP)
 	}
 }
 
-func serve(c net.Conn, f *fb, serverName string, showIP bool) {
+func serveWithRotator(c net.Conn, rotator *ImageRotator, serverName string, showIP bool) {
 	defer func() {
 		c.Close()
 		log.Printf("[%s] Client disconnected", serverName)
 	}()
+
+	// Get image from rotator for this connection
+	f := rotator.GetImageForConnection()
+
 	var clientFB *fb
 	if showIP {
 		clientIP := strings.Split(c.RemoteAddr().String(), ":")[0]

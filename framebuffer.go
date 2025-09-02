@@ -5,8 +5,8 @@ import (
 	"image"
 	"image/color"
 	"image/draw"
-	_ "image/png"
 	_ "image/jpeg"
+	_ "image/png"
 	"net"
 	"os"
 

@@ -1,5 +1,0 @@
-[[server]]
-listen = "0.0.0.0"
-start_port = 5900
-end_port = 5902 # Remove start & end ports to listen only on a single port
-image  = "default.png"

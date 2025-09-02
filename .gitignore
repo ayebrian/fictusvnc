@@ -2,8 +2,10 @@ images/*
 !images/default.png 
 
 *.toml
-!servers.toml
+!config.example.toml
 
 build/
 fictusvnc
 fictusvnc-*
+fictusvnc.exe
+*.log

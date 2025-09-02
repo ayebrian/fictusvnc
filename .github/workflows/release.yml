@@ -53,10 +53,11 @@ jobs:
               mkdir -p "$workdir/images"
               cp "$bin_path" "$workdir/fictusvnc"
               chmod +x "$workdir/fictusvnc"
-              cp servers.toml "$workdir/"
+              cp config.toml "$workdir/" || cp servers.toml "$workdir/" || true
               cp images/default.png "$workdir/images/"
 
-              tar -C dist -czf build/fictusvnc-${os}-${arch}.tar.gz ${os}-${arch}
+              # Create tar.gz with files in root (no folder)
+              tar -C "$workdir" -czf "build/fictusvnc-${os}-${arch}.tar.gz" .
             done
           done
 
@@ -68,10 +69,11 @@ jobs:
             workdir="dist/windows-${arch}"
             mkdir -p "$workdir/images"
             cp "$bin_path" "$workdir/fictusvnc.exe"
-            cp servers.toml "$workdir/"
+            cp config.toml "$workdir/" || cp servers.toml "$workdir/" || true
             cp images/default.png "$workdir/images/"
 
-            (cd dist && zip -r ../build/fictusvnc-windows-${arch}.zip windows-${arch})
+            # Create zip with files in root (no folder)
+            (cd "$workdir" && zip -r "../../build/fictusvnc-windows-${arch}.zip" .)
           done
       - name: Create Release
         id: create_release
