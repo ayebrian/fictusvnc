@@ -49,7 +49,15 @@ func loadImage(path string) (*fb, error) {
 
 func addIPOverlay(src *fb, txt string) *fb {
 	img := image.NewNRGBA(image.Rect(0, 0, src.w, src.h))
-	copy(img.Pix, src.data)
+	// src is stored BGRX; load it into the NRGBA buffer as RGBA with opaque
+	// alpha so that draw.Over composites the banner over the real pixels
+	// (a transparent base would turn the banner into a solid black bar).
+	for i := 0; i+3 < len(src.data); i += 4 {
+		img.Pix[i+0] = src.data[i+2] // R
+		img.Pix[i+1] = src.data[i+1] // G
+		img.Pix[i+2] = src.data[i+0] // B
+		img.Pix[i+3] = 255           // A
+	}
 
 	banner := image.Rect(0, 0, 360, 22)
 	draw.Draw(img, banner, &image.Uniform{color.RGBA{0, 0, 0, 180}}, image.Point{}, draw.Over)
@@ -62,51 +70,51 @@ func addIPOverlay(src *fb, txt string) *fb {
 	}
 	d.DrawString("Your IP: " + txt)
 
+	// Convert back to BGRX; the alpha byte is unused by sendFramebuffer.
 	out := make([]byte, len(img.Pix))
-	for i := 0; i < len(img.Pix); i += 4 {
-		out[i+0] = img.Pix[i+0]
-		out[i+1] = img.Pix[i+1]
-		out[i+2] = img.Pix[i+2]
+	for i := 0; i+3 < len(img.Pix); i += 4 {
+		out[i+0] = img.Pix[i+2] // B
+		out[i+1] = img.Pix[i+1] // G
+		out[i+2] = img.Pix[i+0] // R
 		out[i+3] = 0
 	}
 	return &fb{src.w, src.h, out}
 }
 
-func converter(pf pixelFormat) func(r, g, b uint8) []byte {
+// converter returns a function that writes the pixel (r,g,b) in the client's
+// pixel format into dst and returns the number of bytes written. Writing into
+// a caller-owned buffer avoids a per-pixel allocation on the hot path.
+func converter(pf pixelFormat) func(dst []byte, r, g, b uint8) int {
 	switch pf.BPP {
 	case 32:
-		sh := []uint8{pf.RShift, pf.GShift, pf.BShift}
-		return func(r, g, b uint8) []byte {
-			c := []uint32{uint32(r), uint32(g), uint32(b)}
-			out := uint32(0)
-			for i := 0; i < 3; i++ {
-				out |= (c[i] & uint32(pf.RMax)) << sh[i]
-			}
-			buf := make([]byte, 4)
+		return func(dst []byte, r, g, b uint8) int {
+			out := (uint32(r)&uint32(pf.RMax))<<pf.RShift |
+				(uint32(g)&uint32(pf.GMax))<<pf.GShift |
+				(uint32(b)&uint32(pf.BMax))<<pf.BShift
 			if pf.BigEndian != 0 {
-				binary.BigEndian.PutUint32(buf, out)
+				binary.BigEndian.PutUint32(dst, out)
 			} else {
-				binary.LittleEndian.PutUint32(buf, out)
+				binary.LittleEndian.PutUint32(dst, out)
 			}
-			return buf
+			return 4
 		}
 	case 24:
-		return func(r, g, b uint8) []byte {
-			return []byte{r, g, b}
+		return func(dst []byte, r, g, b uint8) int {
+			dst[0], dst[1], dst[2] = r, g, b
+			return 3
 		}
 	case 8:
 		if pf.RMax == 7 && pf.GMax == 7 && pf.BMax == 3 && pf.RShift == 5 && pf.GShift == 2 && pf.BShift == 0 {
-			return func(r, g, b uint8) []byte {
-				rr := r >> 5
-				gg := g >> 5
-				bb := b >> 6
-				return []byte{(rr << 5) | (gg << 2) | bb}
+			return func(dst []byte, r, g, b uint8) int {
+				dst[0] = ((r >> 5) << 5) | ((g >> 5) << 2) | (b >> 6)
+				return 1
 			}
 		}
 	}
-	return func(r, g, b uint8) []byte {
+	return func(dst []byte, r, g, b uint8) int {
 		y := (uint32(r)*30 + uint32(g)*59 + uint32(b)*11 + 50) / 100
-		return []byte{uint8(y)}
+		dst[0] = uint8(y)
+		return 1
 	}
 }
 
@@ -140,9 +148,7 @@ func sendFramebuffer(c net.Conn, f *fb, pf pixelFormat) error {
 		for x := 0; x < f.w; x++ {
 			off := y*f.w*4 + x*4
 			r, g, b := f.data[off+2], f.data[off+1], f.data[off+0]
-			pix := conv(r, g, b)
-			copy(line[i:], pix)
-			i += len(pix)
+			i += conv(line[i:], r, g, b)
 		}
 		_, err := c.Write(line[:i])
 		if err != nil {

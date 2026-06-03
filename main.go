@@ -7,9 +7,10 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"path/filepath"
-	"strings"
+	"strconv"
 
 	"github.com/BurntSushi/toml"
 )
@@ -71,9 +72,14 @@ func main() {
 			if s.StartPort > 0 && s.EndPort > 0 && s.EndPort >= s.StartPort {
 				for port := s.StartPort; port <= s.EndPort; port++ {
 					addr := fmt.Sprintf(":%d", port)
-					if s.Listen != "" && !strings.HasPrefix(s.Listen, ":") {
-						host := strings.Split(s.Listen, ":")[0]
-						addr = fmt.Sprintf("%s:%d", host, port)
+					if s.Listen != "" {
+						// Take the host part of Listen (handles IPv4, bare
+						// IPv6 and host:port) and attach the ranged port.
+						host := s.Listen
+						if h, _, err := net.SplitHostPort(s.Listen); err == nil {
+							host = h
+						}
+						addr = net.JoinHostPort(host, strconv.Itoa(port))
 					}
 					// Start server in a separate goroutine and handle errors
 					go func(addr string, rot *ImageRotator) {

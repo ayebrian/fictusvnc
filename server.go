@@ -35,6 +35,9 @@ func runVNCServerWithRotator(addr string, rotator *ImageRotator, serverName stri
 
 func serveWithRotator(c net.Conn, rotator *ImageRotator, serverName string, showIP bool) {
 	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[%s] Recovered from panic serving %s: %v", serverName, c.RemoteAddr(), r)
+		}
 		c.Close()
 		log.Printf("[%s] Client disconnected", serverName)
 	}()
