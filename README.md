@@ -19,25 +19,14 @@ Interestingly, it's now being classified as a honeypot - took them long enough t
 
 - 🖼 Serve static JPG & PNG as framebuffer
 - 🖥 Supports RealVNC / UltraVNC / TightVNC clients
+- 🗜 **ZRLE encoding** (with Raw fallback) — far less bandwidth per connection
 - 🛠 Unified configuration via `config.toml`
 - 📶 Multi-instance support (multiple ports/images)
 - 🎲 **Image rotation with weighted random selection**
 - 📋 **Sequential rotation mode**
 - 🏷️ **Named server configurations**
 - 💾 Cross-platform: Linux, Windows, macOS, ARM64
-- 📉 Lightweight: ~2.8MB binary
-
-## ⚙️ Features
-
-- 🖼 Serve static JPG & PNG as framebuffer
-- 🖥 Supports RealVNC / UltraVNC / TightVNC clients
-- 🛠 Configurable via `servers.toml`
-- 📶 Multi-instance support (multiple ports/images)
-- � **Image rotation with weighted random selection**
-- ⏱️ **Time-based and sequential rotation modes**
-- 🏷️ **Named server configurations**
-- �💾 Cross-platform: Linux, Windows, macOS, ARM64
-- 📉 Lightweight: ~2.8MB binary
+- 📉 Lightweight: ~3MB binary
 
 ---
 
@@ -211,6 +200,24 @@ image = "desktop.png"
 - Each new VNC connection gets the next image in sequence
 - Ideal for simulating boot processes or step-by-step scenarios
 
+## Encodings
+
+FictusVNC negotiates the client's preferred encoding automatically — no
+configuration required.
+
+- **ZRLE** (`encoding 16`) is used when the client advertises it. The
+  framebuffer is split into 64×64 tiles and each tile is sent with the
+  cheapest ZRLE subencoding (solid, packed palette, palette/plain RLE or raw),
+  then the whole stream is zlib-compressed over a single per-connection
+  stream. This cuts per-connection bandwidth dramatically — a typical static
+  desktop drops from hundreds of KB (Raw) to a few KB.
+- **Raw** (`encoding 0`) is the automatic fallback for clients that don't
+  support ZRLE or that negotiate an unusual pixel format.
+
+Standard `KeyEvent` / `PointerEvent` / `ClientCutText` messages are accepted
+and discarded (the server is view-only — it never changes the displayed
+image based on client input).
+
 ## Configuration Options
 
 ### Global Section
@@ -314,10 +321,16 @@ image = "desktop.png"
 
 ## Building from Source
 
+Single binary for the current platform:
+
 ```bash
-git clone https://github.com/ayebrian/fictusvnc.git
-cd fictusvnc
 go build -o fictusvnc .
+```
+
+All release targets (Linux / Windows / macOS, amd64 / arm64 / 386) into `build/`:
+
+```bash
+./build.sh
 ```
 
 ---
