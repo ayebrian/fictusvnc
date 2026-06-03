@@ -44,6 +44,12 @@ func read16(c net.Conn) (uint16, error) {
 	return v, err
 }
 
+func read32(c net.Conn) (uint32, error) {
+	var v uint32
+	err := binary.Read(c, binary.BigEndian, &v)
+	return v, err
+}
+
 func sendServerInit(c net.Conn, w, h int, pf pixelFormat, name string) error {
 	err := write16(c, uint16(w), uint16(h))
 	if err != nil {

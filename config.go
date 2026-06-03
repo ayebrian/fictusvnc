@@ -7,7 +7,15 @@ const (
 	msgSetEncodings         = 2
 	msgFramebufferUpdateReq = 3
 	msgEnableCU             = 150
+	msgKeyEvent             = 4
+	msgPointerEvent         = 5
+	msgClientCutText        = 6
 	defaultImageDir         = "images"
+
+	encRaw  = 0
+	encZRLE = 16
+
+	zrleTileSize = 64
 )
 
 type Config struct {

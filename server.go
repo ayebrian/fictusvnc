@@ -17,8 +17,8 @@ func runVNCServerWithRotator(addr string, rotator *ImageRotator, serverName stri
 		return fmt.Errorf("failed to listen on %s: %w", addr, err)
 	}
 
-	// Get first image for logging
-	firstImg := rotator.GetImage()
+	// Peek at the first image for logging without advancing rotation state.
+	firstImg := rotator.images[0].fb
 	log.Printf("[%s] Serving %d images with rotation on %s", serverName, len(rotator.images), addr)
 	log.Printf("[%s] First image: %dx%d", serverName, firstImg.w, firstImg.h)
 
@@ -100,6 +100,8 @@ func serveWithRotator(c net.Conn, rotator *ImageRotator, serverName string, show
 	}
 
 	var lastRejectedFormat string
+	supportsZRLE := false
+	zstream := newZRLEStream()
 
 	for {
 		err := c.SetReadDeadline(time.Now().Add(30 * time.Second))
@@ -157,9 +159,18 @@ func serveWithRotator(c net.Conn, rotator *ImageRotator, serverName string, show
 				return
 			}
 
-			_, err = readN(c, int(n)*4)
-			if err != nil {
+			encs := make([]byte, int(n)*4)
+			if _, err = io.ReadFull(c, encs); err != nil {
 				return
+			}
+			supportsZRLE = false
+			for i := 0; i+4 <= len(encs); i += 4 {
+				if int32(binary.BigEndian.Uint32(encs[i:i+4])) == encZRLE {
+					supportsZRLE = true
+				}
+			}
+			if supportsZRLE {
+				log.Printf("[%s] Client supports ZRLE encoding", serverName)
 			}
 		case msgEnableCU:
 			_, err := readN(c, 9)
@@ -172,14 +183,40 @@ func serveWithRotator(c net.Conn, rotator *ImageRotator, serverName string, show
 				return
 			}
 
-			err = sendFramebuffer(c, clientFB, pf)
+			if enc, ok := newCPIXELEncoder(pf); supportsZRLE && ok {
+				err = sendFramebufferZRLE(c, clientFB, enc, zstream)
+			} else {
+				err = sendFramebuffer(c, clientFB, pf)
+			}
 			if err != nil {
 				log.Printf("[%s] Failed to send framebuffer: %v", serverName, err)
 				return
 			}
-		default:
-			_, err := readN(c, 255)
+		case msgKeyEvent:
+			// down-flag(1) + padding(2) + key(4)
+			if _, err := readN(c, 7); err != nil {
+				return
+			}
+		case msgPointerEvent:
+			// button-mask(1) + x(2) + y(2)
+			if _, err := readN(c, 5); err != nil {
+				return
+			}
+		case msgClientCutText:
+			// padding(3) + length(4) + text(length)
+			if _, err := readN(c, 3); err != nil {
+				return
+			}
+			n, err := read32(c)
 			if err != nil {
+				return
+			}
+			if _, err := readN(c, int(n)); err != nil {
+				return
+			}
+		default:
+			// Unknown message type: drain conservatively and continue.
+			if _, err := readN(c, 1); err != nil {
 				return
 			}
 		}
