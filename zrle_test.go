@@ -8,17 +8,32 @@ import (
 	"testing"
 )
 
-// makeTestFB builds a framebuffer in the internal BGRX layout with a flat
-// solid background plus a diagonal pattern, so the encoder exercises both the
-// "solid" and "raw" tile subencodings.
+// makeTestFB builds a framebuffer in the internal BGRX layout where each
+// vertical 64px band uses a different colour structure, so the encoder is
+// forced through every ZRLE subencoding: solid, packed palette (2 and many
+// colours), and gradient regions that fall back to plain RLE / raw.
 func makeTestFB(w, h int) *fb {
+	pal8 := [8][3]uint8{
+		{0, 0, 0}, {255, 0, 0}, {0, 255, 0}, {0, 0, 255},
+		{255, 255, 0}, {0, 255, 255}, {255, 0, 255}, {128, 128, 128},
+	}
 	data := make([]byte, w*h*4)
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
 			off := y*w*4 + x*4
-			var r, g, b uint8 = 0x20, 0x40, 0x60 // solid background
-			if (x/8+y/8)%2 == 0 && x > w/2 {
-				r, g, b = uint8(x), uint8(y), uint8(x^y)
+			var r, g, b uint8
+			switch (x / 64) % 4 {
+			case 0: // solid
+				r, g, b = 0x20, 0x40, 0x60
+			case 1: // two-colour checkerboard
+				if (x+y)%2 == 0 {
+					r, g, b = 0xff, 0xff, 0xff
+				}
+			case 2: // 8-colour palette blocks
+				c := pal8[((x/4)+(y/4))%8]
+				r, g, b = c[0], c[1], c[2]
+			default: // many-colour gradient
+				r, g, b = uint8(x), uint8(y), uint8(x*y)
 			}
 			data[off+0] = b
 			data[off+1] = g
@@ -36,7 +51,7 @@ func TestZRLERoundTrip(t *testing.T) {
 		t.Fatal("default pixel format should be ZRLE-capable")
 	}
 
-	src := makeTestFB(150, 100) // non-multiple of 64 → partial edge tiles
+	src := makeTestFB(256, 130) // 130 not a multiple of 64 → partial edge tiles
 	z := newZRLEStream()
 
 	srv, cli := net.Pipe()
@@ -114,25 +129,99 @@ func decodeZRLEUpdate(t *testing.T, r io.Reader) *fb {
 		out.data[off+1] = g
 		out.data[off+2] = r
 	}
+	// readRunLen mirrors the ZRLE length format: sum 255-bytes until one is
+	// < 255, run length = sum + 1.
+	readRunLen := func() int {
+		sum := 0
+		for {
+			b := int(readExact(1)[0])
+			sum += b
+			if b < 255 {
+				return sum + 1
+			}
+		}
+	}
+
+	type rgb struct{ r, g, b uint8 }
+	readPalette := func(n int) []rgb {
+		p := make([]rgb, n)
+		for i := range p {
+			p[i].r, p[i].g, p[i].b = readCPIXEL()
+		}
+		return p
+	}
 
 	for ty := 0; ty < h; ty += zrleTileSize {
 		th := min(zrleTileSize, h-ty)
 		for tx := 0; tx < w; tx += zrleTileSize {
 			tw := min(zrleTileSize, w-tx)
+			// place writes the n-th pixel of the tile in row-major order.
+			place := func(local int, r, g, b uint8) {
+				setPx(tx+local%tw, ty+local/tw, r, g, b)
+			}
+			nPix := tw * th
 			sub := readExact(1)[0]
-			switch sub {
-			case 0: // raw
-				for y := ty; y < ty+th; y++ {
-					for x := tx; x < tx+tw; x++ {
-						r, g, b := readCPIXEL()
-						setPx(x, y, r, g, b)
+			switch {
+			case sub == 0: // raw
+				for i := 0; i < nPix; i++ {
+					r, g, b := readCPIXEL()
+					place(i, r, g, b)
+				}
+			case sub == 1: // solid
+				r, g, b := readCPIXEL()
+				for i := 0; i < nPix; i++ {
+					place(i, r, g, b)
+				}
+			case sub >= 2 && sub <= 16: // packed palette
+				pal := readPalette(int(sub))
+				bpp := 1
+				switch {
+				case sub <= 2:
+					bpp = 1
+				case sub <= 4:
+					bpp = 2
+				default:
+					bpp = 4
+				}
+				for y := 0; y < th; y++ {
+					perRow := (tw*bpp + 7) / 8
+					rowBytes := readExact(perRow)
+					bit := 0
+					for x := 0; x < tw; x++ {
+						idx := 0
+						for k := 0; k < bpp; k++ {
+							byteIdx := bit / 8
+							boffset := 7 - bit%8
+							idx = (idx << 1) | int((rowBytes[byteIdx]>>uint(boffset))&1)
+							bit++
+						}
+						place(y*tw+x, pal[idx].r, pal[idx].g, pal[idx].b)
 					}
 				}
-			case 1: // solid
-				r, g, b := readCPIXEL()
-				for y := ty; y < ty+th; y++ {
-					for x := tx; x < tx+tw; x++ {
-						setPx(x, y, r, g, b)
+			case sub == 128: // plain RLE
+				pos := 0
+				for pos < nPix {
+					r, g, b := readCPIXEL()
+					n := readRunLen()
+					for k := 0; k < n; k++ {
+						place(pos, r, g, b)
+						pos++
+					}
+				}
+			case sub >= 130: // palette RLE
+				pal := readPalette(int(sub) - 128)
+				pos := 0
+				for pos < nPix {
+					ib := int(readExact(1)[0])
+					n := 1
+					idx := ib
+					if ib&0x80 != 0 {
+						idx = ib & 0x7f
+						n = readRunLen()
+					}
+					for k := 0; k < n; k++ {
+						place(pos, pal[idx].r, pal[idx].g, pal[idx].b)
+						pos++
 					}
 				}
 			default:
