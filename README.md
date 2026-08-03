@@ -44,19 +44,19 @@ Create `config.toml`:
 ```toml
 [global]
 name = "FictusVNC"
-no_brand = false
-show_ip = false
+branding = true
+show_client_ip = false
 
 # Simple single-image setup (no rotation)
 [server.desktop]
 listen = ":5900"
 image = "default.png"
-server_name = "My Desktop"
+name = "My Desktop"
 
 # Example with rotation
 [server.office]
 listen = "127.0.0.1:5901"
-server_name = "Office Computer"
+name = "Office Computer"
 rotation_mode = "random"
 images = [
   {path = "desktop_work.png", weight = 70},
@@ -106,7 +106,7 @@ go run . --config config.toml
 # Minimal setup - single image, no global options
 [server.my_server]
 listen = "0.0.0.0:5900"
-server_name = "Test Server"
+name = "Test Server"
 image = "desktop.png"
 ```
 
@@ -115,11 +115,11 @@ image = "desktop.png"
 ```toml
 [global]
 name = "My VNC Server"
-show_ip = true
+show_client_ip = true
 
 [server.my_server]
 listen = "0.0.0.0:5900"
-server_name = "Test Server"
+name = "Test Server"
 image = "desktop.png"
 ```
 
@@ -128,13 +128,13 @@ image = "desktop.png"
 ```toml
 [global]
 name = "FictusVNC"
-no_brand = false
-show_ip = true
+branding = true
+show_client_ip = true
 
 # Server with rotation enabled
 [server.random_rotation]
 listen = "0.0.0.0:5900"
-server_name = "Random Server"
+name = "Random Server"
 rotation_mode = "random"
 images = [
   {path = "normal_desktop.png", weight = 60},
@@ -145,7 +145,7 @@ images = [
 # Server with sequential rotation
 [server.sequential_boot]
 listen = "0.0.0.0:5901"
-server_name = "Boot Sequence"
+name = "Boot Sequence"
 rotation_mode = "sequential"
 images = [
   {path = "boot_bios.png"},
@@ -157,7 +157,7 @@ images = [
 # Simple server without rotation (default mode)
 [server.static]
 listen = "0.0.0.0:5902"
-server_name = "Static Server"
+name = "Static Server"
 image = "desktop.png"
 ```
 
@@ -168,7 +168,7 @@ image = "desktop.png"
 listen = "0.0.0.0"
 start_port = 5900
 end_port = 5905
-server_name = "Multi-Port Server"
+name = "Multi-Port Server"
 image = "desktop.png"
 ```
 
@@ -187,10 +187,10 @@ image = "desktop.png"
 ### Random Mode Details
 
 - **Only active when using `images` array**
-- Each image can have a `weight` parameter (**default: 1 if not specified**)
+- Each image can have a `weight` parameter (**default: 10 if not specified**)
 - Higher weights make images more likely to be selected
 - **Example:** weights 50, 30, 20 = 50%, 30%, 20% probability
-- **Example:** no weights specified = equal distribution (all images have weight 1)
+- **Example:** no weights specified = equal distribution (every image gets the same default weight)
 - Perfect for simulating realistic desktop scenarios with varying frequencies
 
 ### Sequential Mode Details
@@ -223,21 +223,36 @@ image based on client input).
 ### Global Section
 | Parameter  | Type    | Description                                       | Default       |
 | ---------- | ------- | ------------------------------------------------- | ------------- |
-| `name`     | string  | Default server name (if not specified per server) | `"FictusVNC"` |
-| `no_brand` | boolean | Disable "FictusVNC -" prefix in server names      | `false`       |
-| `show_ip`  | boolean | Display client IP address on images               | `false`       |
+| `name`     | string  | Brand prefix used when `branding` is enabled      | `"FictusVNC"` |
+| `branding` | boolean | Prefix server names with the global `name`        | `true`        |
+| `show_client_ip`  | boolean | Display client IP address on images               | `false`       |
 
 ### Server Section
 
 | Parameter       | Type   | Description                                             | Default         |
 | --------------- | ------ | ------------------------------------------------------- | --------------- |
 | `listen`        | string | Listen address and port                                 | Required        |
-| `server_name`   | string | Display name for the server                             | Server key name |
+| `name`   | string | Display name for the server                             | Server key name |
 | `image`         | string | **Single image path (default mode)**                    | -               |
 | `images`        | array  | **Array of images for rotation (optional)**             | -               |
 | `rotation_mode` | string | `"random"` or `"sequential"` (ignored if using `image`) | `"random"`      |
 | `start_port`    | int    | Start of port range                                     | -               |
 | `end_port`      | int    | End of port range                                       | -               |
+
+Image paths are resolved relative to the directory holding the config file
+(inside its `images/` subdirectory), so the server behaves identically whether
+it is started from a shell or by systemd. Absolute paths are used as-is.
+
+### Renamed Keys (2.0 → 2.1)
+
+The old spellings still work and log a deprecation warning, so existing configs
+keep running unchanged.
+
+| Old key       | New key          | Note                        |
+| ------------- | ---------------- | --------------------------- |
+| `show_ip`     | `show_client_ip` | Same meaning                |
+| `no_brand`    | `branding`       | Inverted: `no_brand = true` becomes `branding = false` |
+| `server_name` | `name`           | Matches the global `name` key |
 
 ### Image Object Structure
 
@@ -311,8 +326,8 @@ With `config.toml`:
 
 ```toml
 [global]
-show_ip = true
-no_brand = true
+show_client_ip = true
+branding = false
 
 [server.main]
 listen = ":5900"

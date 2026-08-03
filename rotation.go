@@ -22,16 +22,26 @@ type WeightedImageData struct {
 	path   string
 }
 
-func NewImageRotator(config ServerConfig) (*ImageRotator, error) {
+// NewImageRotator loads a server's images. Relative image paths are resolved
+// against baseDir (the config file's directory) rather than the process
+// working directory, so the same config works from a shell and from systemd.
+func NewImageRotator(config ServerConfig, baseDir string) (*ImageRotator, error) {
 	rotator := &ImageRotator{
 		mode: config.RotationMode,
+	}
+
+	resolve := func(p string) string {
+		if filepath.IsAbs(p) {
+			return p
+		}
+		return filepath.Join(baseDir, defaultImageDir, p)
 	}
 
 	// Load images with weights
 	if len(config.Images) > 0 {
 		// Use weighted image array
 		for _, img := range config.Images {
-			imagePath := filepath.Join(defaultImageDir, img.Path)
+			imagePath := resolve(img.Path)
 			fb, err := loadImage(imagePath)
 			if err != nil {
 				log.Printf("[WARN] Failed to load image %s: %v", imagePath, err)
@@ -52,7 +62,7 @@ func NewImageRotator(config ServerConfig) (*ImageRotator, error) {
 		}
 	} else if config.Image != "" {
 		// Fallback to single image
-		imagePath := filepath.Join(defaultImageDir, config.Image)
+		imagePath := resolve(config.Image)
 		fb, err := loadImage(imagePath)
 		if err != nil {
 			return nil, fmt.Errorf("failed to load image %s: %v", imagePath, err)
@@ -113,8 +123,9 @@ func (r *ImageRotator) getRandomWeighted() *fb {
 }
 
 func (r *ImageRotator) getSequential() *fb {
-	idx := atomic.LoadInt64(&r.current) % int64(len(r.images))
-	atomic.AddInt64(&r.current, 1)
+	// Claim the slot and advance in one atomic step; a separate Load+Add
+	// hands the same image to concurrent connections.
+	idx := (atomic.AddInt64(&r.current, 1) - 1) % int64(len(r.images))
 	return r.images[idx].fb
 }
 

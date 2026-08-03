@@ -3,18 +3,39 @@ package main
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net"
-	"strings"
 	"time"
 )
 
-func runVNCServerWithRotator(addr string, rotator *ImageRotator, serverName string, showIP bool) error {
+const (
+	// readTimeout bounds how long a client may stay silent between messages.
+	readTimeout = 30 * time.Second
+	// writeTimeout bounds a single send. Without it a client that stops
+	// reading (TCP zero-window) would pin a goroutine and its framebuffer
+	// copy forever.
+	writeTimeout = 60 * time.Second
+	// maxCutTextLen caps ClientCutText so a bogus length cannot make the
+	// server drain gigabytes, and cannot overflow int on 32-bit builds.
+	maxCutTextLen = 1 << 20
+)
+
+type vncServer struct {
+	ln      net.Listener
+	rotator *ImageRotator
+	name    string
+	showIP  bool
+}
+
+// newVNCServer binds the listener up front so bind failures are reported
+// before the process claims to be running.
+func newVNCServer(addr string, rotator *ImageRotator, serverName string, showIP bool) (*vncServer, error) {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		return fmt.Errorf("failed to listen on %s: %w", addr, err)
+		return nil, fmt.Errorf("failed to listen on %s: %w", addr, err)
 	}
 
 	// Peek at the first image for logging without advancing rotation state.
@@ -22,15 +43,32 @@ func runVNCServerWithRotator(addr string, rotator *ImageRotator, serverName stri
 	log.Printf("[%s] Serving %d images with rotation on %s", serverName, len(rotator.images), addr)
 	log.Printf("[%s] First image: %dx%d", serverName, firstImg.w, firstImg.h)
 
+	return &vncServer{ln: ln, rotator: rotator, name: serverName, showIP: showIP}, nil
+}
+
+func (s *vncServer) close() { s.ln.Close() }
+
+func (s *vncServer) serve() {
 	for {
-		c, err := ln.Accept()
+		c, err := s.ln.Accept()
 		if err != nil {
-			log.Printf("[%s] Accept error: %v", serverName, err)
+			if errors.Is(err, net.ErrClosed) {
+				return
+			}
+			log.Printf("[%s] Accept error: %v", s.name, err)
 			time.Sleep(time.Second)
 			continue
 		}
-		go serveWithRotator(c, rotator, serverName, showIP)
+		go serveWithRotator(c, s.rotator, s.name, s.showIP)
 	}
+}
+
+// clientIP returns the remote host without its port, handling IPv6 literals.
+func clientIP(addr net.Addr) string {
+	if host, _, err := net.SplitHostPort(addr.String()); err == nil {
+		return host
+	}
+	return addr.String()
 }
 
 func serveWithRotator(c net.Conn, rotator *ImageRotator, serverName string, showIP bool) {
@@ -47,14 +85,17 @@ func serveWithRotator(c net.Conn, rotator *ImageRotator, serverName string, show
 
 	var clientFB *fb
 	if showIP {
-		clientIP := strings.Split(c.RemoteAddr().String(), ":")[0]
-		clientFB = addIPOverlay(f, clientIP)
+		clientFB = addIPOverlay(f, clientIP(c.RemoteAddr()))
 	} else {
 		clientFB = f
 	}
 	log.Printf("[%s] Client connected from %s", serverName, c.RemoteAddr())
 
-	c.SetReadDeadline(time.Now().Add(30 * time.Second))
+	// Handshake steps are short; one deadline covers reads and writes.
+	if err := c.SetDeadline(time.Now().Add(readTimeout)); err != nil {
+		log.Printf("[%s] Failed to set deadline: %v", serverName, err)
+		return
+	}
 
 	_, err := c.Write([]byte(rfbVersion))
 	if err != nil {
@@ -104,10 +145,11 @@ func serveWithRotator(c net.Conn, rotator *ImageRotator, serverName string, show
 
 	var lastRejectedFormat string
 	supportsZRLE := false
+	sentUpdate := false
 	zstream := newZRLEStream()
 
 	for {
-		err := c.SetReadDeadline(time.Now().Add(30 * time.Second))
+		err := c.SetReadDeadline(time.Now().Add(readTimeout))
 		if err != nil {
 			log.Printf("[%s] Failed to set read deadline: %v", serverName, err)
 			return
@@ -181,11 +223,26 @@ func serveWithRotator(c net.Conn, rotator *ImageRotator, serverName string, show
 				return
 			}
 		case msgFramebufferUpdateReq:
-			_, err := readN(c, 9)
-			if err != nil {
+			// incremental(1) + x(2) + y(2) + w(2) + h(2)
+			var req [9]byte
+			if _, err := io.ReadFull(c, req[:]); err != nil {
 				return
 			}
+			// The framebuffer never changes, so an incremental request has
+			// nothing to answer. Replying anyway makes clients spin: they
+			// re-request as soon as each update lands, burning CPU and
+			// bandwidth for an image that is already on screen. The very
+			// first update is always sent, even if flagged incremental, so a
+			// client never ends up staring at a blank screen.
+			if req[0] != 0 && sentUpdate {
+				continue
+			}
+			sentUpdate = true
 
+			if err := c.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
+				log.Printf("[%s] Failed to set write deadline: %v", serverName, err)
+				return
+			}
 			if enc, ok := newCPIXELEncoder(pf); supportsZRLE && ok {
 				err = sendFramebufferZRLE(c, clientFB, enc, zstream)
 			} else {
@@ -214,14 +271,18 @@ func serveWithRotator(c net.Conn, rotator *ImageRotator, serverName string, show
 			if err != nil {
 				return
 			}
+			if n > maxCutTextLen {
+				log.Printf("[%s] ClientCutText too large (%d bytes), closing connection", serverName, n)
+				return
+			}
 			if _, err := readN(c, int(n)); err != nil {
 				return
 			}
 		default:
-			// Unknown message type: drain conservatively and continue.
-			if _, err := readN(c, 1); err != nil {
-				return
-			}
+			// The message length is unknown, so the stream cannot be resynced;
+			// anything read from here on would be misinterpreted.
+			log.Printf("[%s] Unknown message type %d, closing connection", serverName, msgType)
+			return
 		}
 	}
 }

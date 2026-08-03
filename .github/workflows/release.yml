@@ -16,7 +16,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v4
         with:
-          go-version: "1.24"
+          go-version: "1.25"
 
       - name: Build binaries
         run: |
@@ -53,7 +53,7 @@ jobs:
               mkdir -p "$workdir/images"
               cp "$bin_path" "$workdir/fictusvnc"
               chmod +x "$workdir/fictusvnc"
-              cp config.toml "$workdir/" || cp servers.toml "$workdir/" || true
+              cp config.example.toml "$workdir/config.toml"
               cp images/default.png "$workdir/images/"
 
               # Create tar.gz with files in root (no folder)
@@ -69,7 +69,7 @@ jobs:
             workdir="dist/windows-${arch}"
             mkdir -p "$workdir/images"
             cp "$bin_path" "$workdir/fictusvnc.exe"
-            cp config.toml "$workdir/" || cp servers.toml "$workdir/" || true
+            cp config.example.toml "$workdir/config.toml"
             cp images/default.png "$workdir/images/"
 
             # Create zip with files in root (no folder)
