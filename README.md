@@ -225,7 +225,32 @@ image based on client input).
 | ---------- | ------- | ------------------------------------------------- | ------------- |
 | `name`     | string  | Brand prefix used when `branding` is enabled      | `"FictusVNC"` |
 | `branding` | boolean | Prefix server names with the global `name`        | `true`        |
-| `show_client_ip`  | boolean | Display client IP address on images               | `false`       |
+| `show_client_ip` | boolean | Draw the client IP on the image                   | `false`       |
+| `show_rdns`    | boolean | Add the client's reverse-DNS name to the banner   | `false`       |
+| `show_time`    | boolean | Add the connection timestamp to the banner        | `false`       |
+
+#### Client info banner
+
+Any of the three flags above turns on a translucent banner in the top-left
+corner. It is sized to its contents — the box grows for an IPv6 address or an
+extra line and shrinks back for a short IPv4 — and the font scales with the
+image, so it stays readable on a 4K wallpaper without swallowing a thumbnail.
+On a narrow image the text shrinks rather than running off the edge.
+
+```
+IP:   198.51.100.42
+Host: bot.internet-census.example.org
+Time: 2026-08-03 21:53:12 UTC
+```
+
+`show_rdns` is worth thinking about before enabling. It performs one PTR lookup
+per incoming connection, bounded at 700 ms, and that lookup happens before the
+RFB handshake — so it delays the greeting slightly, which is itself a signal to
+whoever is probing you. It also queries the client's own DNS authority, telling
+that operator you looked them up. With the flag off no DNS traffic is generated
+at all. Clients with no PTR record show `(no PTR record)`.
+
+`show_time` uses the server's local timezone.
 
 ### Server Section
 

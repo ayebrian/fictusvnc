@@ -70,7 +70,7 @@ func main() {
 		}
 
 		for _, addr := range listenAddrs(s) {
-			srv, err := newVNCServer(addr, rotator, name, cfg.Global.ShowClientIP)
+			srv, err := newVNCServer(addr, rotator, name, cfg.Global.overlay())
 			if err != nil {
 				log.Printf("[WARN] Failed to start server %s on %s: %v", name, addr, err)
 				continue

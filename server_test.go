@@ -70,7 +70,7 @@ func startTestServer(t *testing.T, f *fb) net.Conn {
 		if err != nil {
 			return
 		}
-		serveWithRotator(c, testRotator(f), "test", false)
+		serveWithRotator(c, testRotator(f), "test", overlayConfig{})
 	}()
 	t.Cleanup(wg.Wait)
 

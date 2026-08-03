@@ -5,6 +5,15 @@ name = "FictusVNC"
 branding = true
 show_client_ip = false
 
+# Extra banner lines. Both need show_client_ip-style overlay to be useful and
+# are off by default.
+#   show_rdns — reverse-DNS name of the client. Costs one PTR lookup per
+#               connection (700ms timeout) and tells the client's DNS operator
+#               that you looked them up.
+#   show_time — connection timestamp in the server's local timezone.
+show_rdns = false
+show_time = false
+
 [server.random_server]
 listen = "0.0.0.0:5900"
 name = "Random Rotation Server"

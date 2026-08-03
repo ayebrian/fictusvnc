@@ -2,12 +2,14 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net"
+	"strings"
 	"time"
 )
 
@@ -21,18 +23,65 @@ const (
 	// maxCutTextLen caps ClientCutText so a bogus length cannot make the
 	// server drain gigabytes, and cannot overflow int on 32-bit builds.
 	maxCutTextLen = 1 << 20
+	// rdnsTimeout bounds the reverse lookup. It runs before the handshake,
+	// so a slow or unreachable PTR authority must not stall the connection.
+	rdnsTimeout = 700 * time.Millisecond
 )
+
+// overlayConfig selects which lines the client-info banner carries.
+type overlayConfig struct {
+	showIP   bool
+	showRDNS bool
+	showTime bool
+}
+
+func (o overlayConfig) enabled() bool { return o.showIP || o.showRDNS || o.showTime }
+
+// lines builds the banner text for one connection. The reverse lookup only
+// runs when it is going to be displayed, so the default configuration makes
+// no DNS traffic at all.
+func (o overlayConfig) lines(addr net.Addr, now time.Time) []string {
+	var out []string
+	ip := clientIP(addr)
+	if o.showIP {
+		out = append(out, "IP:   "+ip)
+	}
+	if o.showRDNS {
+		host := lookupRDNS(ip)
+		if host == "" {
+			host = "(no PTR record)"
+		}
+		out = append(out, "Host: "+host)
+	}
+	if o.showTime {
+		out = append(out, "Time: "+now.Format("2006-01-02 15:04:05 MST"))
+	}
+	return out
+}
+
+// lookupRDNS resolves the PTR record for ip, returning "" when there is none
+// or the lookup does not finish in time.
+func lookupRDNS(ip string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), rdnsTimeout)
+	defer cancel()
+
+	names, err := net.DefaultResolver.LookupAddr(ctx, ip)
+	if err != nil || len(names) == 0 {
+		return ""
+	}
+	return strings.TrimSuffix(names[0], ".")
+}
 
 type vncServer struct {
 	ln      net.Listener
 	rotator *ImageRotator
 	name    string
-	showIP  bool
+	overlay overlayConfig
 }
 
 // newVNCServer binds the listener up front so bind failures are reported
 // before the process claims to be running.
-func newVNCServer(addr string, rotator *ImageRotator, serverName string, showIP bool) (*vncServer, error) {
+func newVNCServer(addr string, rotator *ImageRotator, serverName string, overlay overlayConfig) (*vncServer, error) {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to listen on %s: %w", addr, err)
@@ -43,7 +92,7 @@ func newVNCServer(addr string, rotator *ImageRotator, serverName string, showIP 
 	log.Printf("[%s] Serving %d images with rotation on %s", serverName, len(rotator.images), addr)
 	log.Printf("[%s] First image: %dx%d", serverName, firstImg.w, firstImg.h)
 
-	return &vncServer{ln: ln, rotator: rotator, name: serverName, showIP: showIP}, nil
+	return &vncServer{ln: ln, rotator: rotator, name: serverName, overlay: overlay}, nil
 }
 
 func (s *vncServer) close() { s.ln.Close() }
@@ -59,7 +108,7 @@ func (s *vncServer) serve() {
 			time.Sleep(time.Second)
 			continue
 		}
-		go serveWithRotator(c, s.rotator, s.name, s.showIP)
+		go serveWithRotator(c, s.rotator, s.name, s.overlay)
 	}
 }
 
@@ -71,7 +120,7 @@ func clientIP(addr net.Addr) string {
 	return addr.String()
 }
 
-func serveWithRotator(c net.Conn, rotator *ImageRotator, serverName string, showIP bool) {
+func serveWithRotator(c net.Conn, rotator *ImageRotator, serverName string, overlay overlayConfig) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("[%s] Recovered from panic serving %s: %v", serverName, c.RemoteAddr(), r)
@@ -83,11 +132,9 @@ func serveWithRotator(c net.Conn, rotator *ImageRotator, serverName string, show
 	// Get image from rotator for this connection
 	f := rotator.GetImageForConnection()
 
-	var clientFB *fb
-	if showIP {
-		clientFB = addIPOverlay(f, clientIP(c.RemoteAddr()))
-	} else {
-		clientFB = f
+	clientFB := f
+	if overlay.enabled() {
+		clientFB = addIPOverlay(f, overlay.lines(c.RemoteAddr(), time.Now())...)
 	}
 	log.Printf("[%s] Client connected from %s", serverName, c.RemoteAddr())
 

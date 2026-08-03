@@ -33,11 +33,22 @@ type GlobalConfig struct {
 	Name         string `toml:"name"`
 	Branding     bool   `toml:"branding"`
 	ShowClientIP bool   `toml:"show_client_ip"`
+	ShowRDNS     bool   `toml:"show_rdns"`
+	ShowTime     bool   `toml:"show_time"`
 
 	// Deprecated 2.0 spellings, still accepted so existing configs keep
 	// working. Branding is the inverse of NoBrand.
 	NoBrand bool `toml:"no_brand"`
 	ShowIP  bool `toml:"show_ip"`
+}
+
+// overlay returns the banner settings implied by the global config.
+func (g GlobalConfig) overlay() overlayConfig {
+	return overlayConfig{
+		showIP:   g.ShowClientIP,
+		showRDNS: g.ShowRDNS,
+		showTime: g.ShowTime,
+	}
 }
 
 type WeightedImage struct {

@@ -5,3 +5,5 @@ go 1.26.5
 require github.com/BurntSushi/toml v1.6.0
 
 require golang.org/x/image v0.44.0
+
+require golang.org/x/text v0.40.0 // indirect

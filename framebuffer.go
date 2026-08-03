@@ -7,11 +7,15 @@ import (
 	"image/draw"
 	_ "image/jpeg"
 	_ "image/png"
+	"log"
 	"net"
 	"os"
+	"sync"
 
 	"golang.org/x/image/font"
 	"golang.org/x/image/font/basicfont"
+	"golang.org/x/image/font/gofont/gomono"
+	"golang.org/x/image/font/opentype"
 	"golang.org/x/image/math/fixed"
 )
 
@@ -47,7 +51,99 @@ func loadImage(path string) (*fb, error) {
 	return &fb{r.Dx(), r.Dy(), buf}, nil
 }
 
-func addIPOverlay(src *fb, txt string) *fb {
+// overlayFont is the scalable face used for the banner. Go Mono keeps
+// addresses and timestamps aligned and stays legible when scaled down. It
+// ships inside golang.org/x/image, so this costs no extra dependency.
+var overlayFont = sync.OnceValue(func() *opentype.Font {
+	f, err := opentype.Parse(gomono.TTF)
+	if err != nil {
+		// Only reachable if the embedded font is corrupt; the caller falls
+		// back to the fixed-size bitmap face.
+		log.Printf("[WARN] Failed to parse overlay font, falling back to bitmap face: %v", err)
+		return nil
+	}
+	return f
+})
+
+// newOverlayFace builds a face at the requested pixel size, falling back to
+// the fixed 7x13 bitmap face if the scalable font is unavailable.
+func newOverlayFace(size float64) (font.Face, func()) {
+	f := overlayFont()
+	if f == nil {
+		return basicfont.Face7x13, func() {}
+	}
+	// DPI 72 makes one point equal one pixel, so size is a pixel height.
+	face, err := opentype.NewFace(f, &opentype.FaceOptions{
+		Size:    size,
+		DPI:     72,
+		Hinting: font.HintingFull,
+	})
+	if err != nil {
+		return basicfont.Face7x13, func() {}
+	}
+	return face, func() { face.Close() }
+}
+
+// overlayLayout is a measured banner: the face to draw with, the box to fill
+// and the metrics needed to place each line.
+type overlayLayout struct {
+	face    font.Face
+	release func()
+	box     image.Rectangle
+	pad     int
+	lineH   int
+	ascent  int
+}
+
+// layoutOverlay picks a font size proportional to the image, measures the
+// widest line and returns a box just large enough to hold the text plus a
+// small padding. The size is reduced until the box fits the image width, so
+// long IPv6 addresses and hostnames never spill off the edge.
+func layoutOverlay(w, h int, lines []string) overlayLayout {
+	// Roughly 1/26th of the height reads well across wallpaper-sized images
+	// and screenshots alike; the clamps keep tiny and huge images sane.
+	size := float64(h) / 26
+	size = min(max(size, 11), 40)
+
+	for {
+		face, release := newOverlayFace(size)
+		m := face.Metrics()
+		pad := max(int(size*0.45), 4)
+		lineH := m.Height.Ceil()
+
+		widest := 0
+		for _, s := range lines {
+			if adv := font.MeasureString(face, s).Ceil(); adv > widest {
+				widest = adv
+			}
+		}
+
+		boxW := widest + 2*pad
+		boxH := lineH*len(lines) + 2*pad
+
+		// Shrink rather than clip. 7px is the floor: below that the text is
+		// unreadable anyway, so an overflowing box is the lesser evil.
+		if boxW > w && size > 7 {
+			release()
+			size--
+			continue
+		}
+
+		return overlayLayout{
+			face:    face,
+			release: release,
+			box:     image.Rect(0, 0, min(boxW, w), min(boxH, h)),
+			pad:     pad,
+			lineH:   lineH,
+			ascent:  m.Ascent.Ceil(),
+		}
+	}
+}
+
+// addIPOverlay draws a translucent banner carrying the given lines over the
+// top-left of the image. The banner is sized to its contents, so it grows for
+// an IPv6 address or an extra rDNS line and shrinks when it is just an IPv4.
+func addIPOverlay(src *fb, lines ...string) *fb {
 	img := image.NewNRGBA(image.Rect(0, 0, src.w, src.h))
 	// src is stored BGRX; load it into the NRGBA buffer as RGBA with opaque
 	// alpha so that draw.Over composites the banner over the real pixels
@@ -59,16 +155,18 @@ func addIPOverlay(src *fb, txt string) *fb {
 		img.Pix[i+3] = 255           // A
 	}
 
-	banner := image.Rect(0, 0, 360, 22)
-	draw.Draw(img, banner, &image.Uniform{color.RGBA{0, 0, 0, 180}}, image.Point{}, draw.Over)
+	if len(lines) > 0 {
+		l := layoutOverlay(src.w, src.h, lines)
+		defer l.release()
 
-	d := &font.Drawer{
-		Dst:  img,
-		Src:  image.White,
-		Face: basicfont.Face7x13,
-		Dot:  fixed.P(6, 16),
+		draw.Draw(img, l.box, &image.Uniform{color.RGBA{0, 0, 0, 180}}, image.Point{}, draw.Over)
+
+		d := &font.Drawer{Dst: img, Src: image.White, Face: l.face}
+		for i, s := range lines {
+			d.Dot = fixed.P(l.pad, l.pad+l.ascent+i*l.lineH)
+			d.DrawString(s)
+		}
 	}
-	d.DrawString("Your IP: " + txt)
 
 	// Convert back to BGRX; the alpha byte is unused by sendFramebuffer.
 	out := make([]byte, len(img.Pix))
