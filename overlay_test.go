@@ -153,7 +153,7 @@ func TestOverlayConfigLines(t *testing.T) {
 	when := time.Date(2026, 8, 3, 21, 53, 12, 0, time.UTC)
 
 	// rDNS is left off so the test makes no DNS queries.
-	got := overlayConfig{showIP: true, showTime: true}.lines(addr, when)
+	got := overlayConfig{showIP: true, showTime: true}.lines(clientIP(addr), "", when)
 	want := []string{"IP:   2001:db8::1", "Time: 2026-08-03 21:53:12 UTC"}
 
 	if len(got) != len(want) {
@@ -189,7 +189,7 @@ func TestOverlayWithoutRDNSMakesNoLookup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
-	for _, line := range (overlayConfig{showIP: true, showTime: true}).lines(addr, time.Now()) {
+	for _, line := range (overlayConfig{showIP: true, showTime: true}).lines(clientIP(addr), "", time.Now()) {
 		if len(line) > 5 && line[:5] == "Host:" {
 			t.Errorf("unexpected rDNS line with show_rdns off: %q", line)
 		}

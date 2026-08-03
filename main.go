@@ -6,11 +6,11 @@ package main
 import (
 	"flag"
 	"fmt"
-	"log"
 	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"syscall"
 )
@@ -31,8 +31,6 @@ func main() {
 		return
 	}
 
-	log.Printf("[INFO] FictusVNC %s starting…", appVersion)
-
 	if *configPath == "" {
 		exe, _ := os.Executable()
 		dir := filepath.Dir(exe)
@@ -40,24 +38,53 @@ func main() {
 	}
 
 	if _, err := os.Stat(*configPath); err != nil {
-		log.Printf("[ERROR] No configuration file found at %s", *configPath)
-		log.Printf("[INFO] Create a config.toml file or specify path with --config")
+		// The logger is not configured yet, so this one goes straight to
+		// stderr in plain text.
+		fmt.Fprintf(os.Stderr, "no configuration file found at %s\n", *configPath)
+		fmt.Fprintf(os.Stderr, "create a config.toml file or pass --config\n")
 		os.Exit(1)
 	}
 
-	cfg, err := loadConfig(*configPath)
-	check(err)
+	cfg, warnings, err := loadConfig(*configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to load %s: %v\n", *configPath, err)
+		os.Exit(1)
+	}
+
+	log, closeLog, err := setupLogging(cfg.Logging)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to set up logging: %v\n", err)
+		os.Exit(1)
+	}
+	if closeLog != nil {
+		defer closeLog.Close()
+	}
+
+	// Deprecation notices were collected while the logger was still being
+	// built; replay them now so they land in the configured stream.
+	for _, w := range warnings {
+		log.Warn("config", "detail", w)
+	}
+
+	log.Info("starting",
+		"version", appVersion,
+		"go_version", runtime.Version(),
+		"config", *configPath,
+	)
 
 	// Image paths are resolved relative to the config file, not the working
 	// directory, so the server behaves the same started by hand or by systemd.
 	baseDir, err := filepath.Abs(filepath.Dir(*configPath))
-	check(err)
+	if err != nil {
+		log.Error("failed to resolve config directory", "error", err)
+		os.Exit(1)
+	}
 
 	var servers []*vncServer
 	for serverID, s := range cfg.Server {
 		rotator, err := NewImageRotator(s, baseDir)
 		if err != nil {
-			log.Printf("[ERROR] Failed to create image rotator for '%s': %v", serverID, err)
+			log.Error("failed to load images for server", "server_id", serverID, "error", err)
 			continue
 		}
 
@@ -69,35 +96,38 @@ func main() {
 			name = fmt.Sprintf("%s - %s", cfg.Global.Name, name)
 		}
 
-		for _, addr := range listenAddrs(s) {
-			srv, err := newVNCServer(addr, rotator, name, cfg.Global.overlay())
+		addrs := listenAddrs(s)
+		if len(addrs) == 0 {
+			log.Error("server has no listen address or valid port range",
+				"server_id", serverID, "server", name)
+			continue
+		}
+		for _, addr := range addrs {
+			srv, err := newVNCServer(addr, rotator, name, cfg.Global.overlay(), log)
 			if err != nil {
-				log.Printf("[WARN] Failed to start server %s on %s: %v", name, addr, err)
+				log.Warn("failed to bind listener", "server", name, "listen", addr, "error", err)
 				continue
 			}
 			servers = append(servers, srv)
 		}
-		if len(listenAddrs(s)) == 0 {
-			log.Printf("[ERROR] Server %s has no listen address or valid port range", name)
-		}
 	}
 
 	if len(servers) == 0 {
-		log.Printf("[ERROR] No servers could be started — check listen addresses and image paths")
+		log.Error("no servers could be started, check listen addresses and image paths")
 		os.Exit(1)
 	}
 
 	for _, srv := range servers {
 		go srv.serve()
 	}
-	log.Printf("[INFO] %d listener(s) active", len(servers))
+	log.Info("ready", "listeners", len(servers))
 
 	// Block until the process is asked to stop, so a shutdown is clean and a
 	// zero-listener config can never leave the process hanging silently.
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
-	<-sig
-	log.Printf("[INFO] Shutting down")
+	s := <-sig
+	log.Info("shutting down", "signal", s.String())
 	for _, srv := range servers {
 		srv.close()
 	}
@@ -123,10 +153,4 @@ func listenAddrs(s ServerConfig) []string {
 		return []string{s.Listen}
 	}
 	return nil
-}
-
-func check(err error) {
-	if err != nil {
-		log.Fatal(err)
-	}
 }

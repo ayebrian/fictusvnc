@@ -252,6 +252,67 @@ at all. Clients with no PTR record show `(no PTR record)`.
 
 `show_time` uses the server's local timezone.
 
+### Logging Section
+
+| Parameter | Type   | Description                              | Default    |
+| --------- | ------ | ---------------------------------------- | ---------- |
+| `level`   | string | `debug`, `info`, `warn` or `error`       | `"info"`   |
+| `format`  | string | `json` or `text`                         | `"json"`   |
+| `output`  | string | `stdout`, `stderr` or a file path        | `"stdout"` |
+
+FictusVNC emits structured logs through the standard library's `log/slog` — no
+extra dependency, and nothing to configure on the shipping side beyond pointing
+a collector at the stream.
+
+**One record per connection.** Instead of scattering six lines per client, the
+server accumulates the whole session and emits it as a single event when the
+connection ends:
+
+```json
+{"time":"2026-08-03T22:11:41.986Z","level":"INFO","msg":"connection",
+ "server":"Reception","listen":"127.0.0.1:5900",
+ "peer_ip":"198.51.100.42","peer_port":48280,
+ "handshake":true,"outcome":"client_eof","duration_ms":1049,"bytes_sent":6407,
+ "client_version":"RFB 003.008","security_type":1,
+ "image":"default.png","updates":1,"pixel_bpp":32,"pixel_depth":24,
+ "encodings":[16,0,-239],"encoding_used":"zrle"}
+```
+
+That record is designed to be aggregated. `encodings` keeps the client's own
+ordering, which is the single best fingerprint of which VNC software is on the
+other end — RealVNC, TightVNC, noVNC and mass scanners each advertise a
+distinctive list. `outcome` is a small stable set (`client_eof`,
+`idle_timeout`, `unknown_message`, `version_read_failed`, `read_error`,
+`update_write_failed`, `cut_text_too_large`, `panic`, …) so it groups cleanly,
+and `handshake` separates real clients from probes that open a socket and
+vanish. Set `level = "debug"` to also get per-message protocol detail.
+
+**Shipping to Elasticsearch, Loki or Splunk** needs no code in FictusVNC and no
+credentials in this config. Write JSON to stdout and let a collector — Vector,
+Filebeat, Fluent Bit, Promtail — pick it up. An in-process exporter would have
+to reimplement buffering, retries and backpressure, and would still drop events
+on restart; collectors already solved that.
+
+**Under systemd or Docker**, leave `output = "stdout"`: journald and the Docker
+log driver already capture and rotate the stream. A file path is for running
+without a supervisor. After rotating the file, send `SIGHUP` and the server
+reopens it — the usual logrotate arrangement:
+
+```
+/var/log/fictusvnc/*.log {
+    daily
+    rotate 14
+    compress
+    missingok
+    postrotate
+        systemctl kill -s HUP fictusvnc.service
+    endscript
+}
+```
+
+Without that signal the server would keep writing to the rotated-away inode and
+the live file would stay empty.
+
 ### Server Section
 
 | Parameter       | Type   | Description                                             | Default         |

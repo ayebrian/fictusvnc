@@ -3,11 +3,18 @@ package main
 import (
 	"encoding/binary"
 	"io"
+	"log/slog"
 	"net"
 	"sync"
 	"testing"
 	"time"
 )
+
+// testLogger discards output so tests stay quiet; raise the level to see
+// what a session is doing.
+func testLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
+}
 
 func testRotator(f *fb) *ImageRotator {
 	return &ImageRotator{
@@ -70,7 +77,7 @@ func startTestServer(t *testing.T, f *fb) net.Conn {
 		if err != nil {
 			return
 		}
-		serveWithRotator(c, testRotator(f), "test", overlayConfig{})
+		serveWithRotator(c, testRotator(f), "test", testLogger(), overlayConfig{})
 	}()
 	t.Cleanup(wg.Wait)
 

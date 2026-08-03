@@ -7,7 +7,7 @@ import (
 	"image/draw"
 	_ "image/jpeg"
 	_ "image/png"
-	"log"
+	"log/slog"
 	"net"
 	"os"
 	"sync"
@@ -59,7 +59,7 @@ var overlayFont = sync.OnceValue(func() *opentype.Font {
 	if err != nil {
 		// Only reachable if the embedded font is corrupt; the caller falls
 		// back to the fixed-size bitmap face.
-		log.Printf("[WARN] Failed to parse overlay font, falling back to bitmap face: %v", err)
+		slog.Warn("failed to parse overlay font, falling back to bitmap face", "error", err)
 		return nil
 	}
 	return f

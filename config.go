@@ -1,7 +1,7 @@
 package main
 
 import (
-	"log"
+	"fmt"
 
 	"github.com/BurntSushi/toml"
 )
@@ -25,8 +25,9 @@ const (
 )
 
 type Config struct {
-	Global GlobalConfig            `toml:"global"`
-	Server map[string]ServerConfig `toml:"server"`
+	Global  GlobalConfig            `toml:"global"`
+	Logging LoggingConfig           `toml:"logging"`
+	Server  map[string]ServerConfig `toml:"server"`
 }
 
 type GlobalConfig struct {
@@ -70,12 +71,18 @@ type ServerConfig struct {
 }
 
 // loadConfig decodes the TOML file and folds any deprecated keys into their
-// current equivalents, warning once per key so old configs keep working.
-func loadConfig(path string) (Config, error) {
+// current equivalents. Warnings are returned rather than logged, because the
+// logger is not configured until this config has been read.
+func loadConfig(path string) (Config, []string, error) {
 	var cfg Config
+	var warnings []string
+
 	md, err := toml.DecodeFile(path, &cfg)
 	if err != nil {
-		return cfg, err
+		return cfg, nil, err
+	}
+	warn := func(format string, args ...any) {
+		warnings = append(warnings, fmt.Sprintf(format, args...))
 	}
 
 	// branding replaces no_brand and has the opposite polarity, so it only
@@ -83,23 +90,23 @@ func loadConfig(path string) (Config, error) {
 	switch {
 	case md.IsDefined("global", "branding"):
 		if md.IsDefined("global", "no_brand") {
-			log.Printf("[WARN] config: both 'branding' and deprecated 'no_brand' set — using 'branding'")
+			warn("both 'branding' and deprecated 'no_brand' are set, using 'branding'")
 		}
 	case md.IsDefined("global", "no_brand"):
-		log.Printf("[WARN] config: 'no_brand' is deprecated, use 'branding = %t'", !cfg.Global.NoBrand)
+		warn("'no_brand' is deprecated, use 'branding = %t'", !cfg.Global.NoBrand)
 		cfg.Global.Branding = !cfg.Global.NoBrand
 	default:
 		cfg.Global.Branding = true
 	}
 
 	if !md.IsDefined("global", "show_client_ip") && md.IsDefined("global", "show_ip") {
-		log.Printf("[WARN] config: 'show_ip' is deprecated, use 'show_client_ip'")
+		warn("'show_ip' is deprecated, use 'show_client_ip'")
 		cfg.Global.ShowClientIP = cfg.Global.ShowIP
 	}
 
 	for id, s := range cfg.Server {
 		if s.Name == "" && s.ServerName != "" {
-			log.Printf("[WARN] config: server %q uses deprecated 'server_name', use 'name'", id)
+			warn("server %q uses deprecated 'server_name', use 'name'", id)
 			s.Name = s.ServerName
 			cfg.Server[id] = s
 		}
@@ -108,5 +115,5 @@ func loadConfig(path string) (Config, error) {
 	if cfg.Global.Name == "" {
 		cfg.Global.Name = "FictusVNC"
 	}
-	return cfg, nil
+	return cfg, warnings, nil
 }

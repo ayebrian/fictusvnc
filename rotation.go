@@ -2,7 +2,7 @@ package main
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 	"math/rand"
 	"path/filepath"
 	"sync/atomic"
@@ -44,7 +44,7 @@ func NewImageRotator(config ServerConfig, baseDir string) (*ImageRotator, error)
 			imagePath := resolve(img.Path)
 			fb, err := loadImage(imagePath)
 			if err != nil {
-				log.Printf("[WARN] Failed to load image %s: %v", imagePath, err)
+				slog.Warn("failed to load image, skipping", "path", imagePath, "error", err)
 				continue
 			}
 
@@ -82,56 +82,68 @@ func NewImageRotator(config ServerConfig, baseDir string) (*ImageRotator, error)
 		return nil, fmt.Errorf("no valid images loaded")
 	}
 
-	log.Printf("[INFO] Loaded %d images for rotation (mode: %s)", len(rotator.images), rotator.mode)
+	slog.Debug("loaded images", "count", len(rotator.images), "rotation_mode", rotator.modeName())
 	return rotator, nil
 }
 
-func (r *ImageRotator) GetImage() *fb {
-	if len(r.images) == 1 {
-		return r.images[0].fb
+// modeName reports the effective rotation mode, resolving the empty and
+// unrecognised settings to the "random" default that GetImage actually uses.
+func (r *ImageRotator) modeName() string {
+	if r.mode == "sequential" {
+		return "sequential"
 	}
-
-	switch r.mode {
-	case "random":
-		return r.getRandomWeighted()
-	case "sequential":
-		return r.getSequential()
-	default:
-		// Default to random weighted
-		return r.getRandomWeighted()
-	}
+	return "random"
 }
 
-func (r *ImageRotator) getRandomWeighted() *fb {
+func (r *ImageRotator) GetImage() *fb { return r.pick().fb }
+
+// pick selects the entry to serve next according to the rotation mode.
+func (r *ImageRotator) pick() *WeightedImageData {
+	if len(r.images) == 1 {
+		return &r.images[0]
+	}
+
+	if r.mode == "sequential" {
+		return r.getSequential()
+	}
+	// Everything else, including an empty or unrecognised mode, is weighted
+	// random.
+	return r.getRandomWeighted()
+}
+
+func (r *ImageRotator) getRandomWeighted() *WeightedImageData {
 	if r.totalWeight == 0 {
-		return r.images[0].fb
+		return &r.images[0]
 	}
 
 	// Generate random number from 1 to totalWeight
 	target := rand.Intn(r.totalWeight) + 1
 	current := 0
 
-	for _, img := range r.images {
-		current += img.weight
+	for i := range r.images {
+		current += r.images[i].weight
 		if target <= current {
-			return img.fb
+			return &r.images[i]
 		}
 	}
 
 	// Fallback (should not happen)
-	return r.images[0].fb
+	return &r.images[0]
 }
 
-func (r *ImageRotator) getSequential() *fb {
+func (r *ImageRotator) getSequential() *WeightedImageData {
 	// Claim the slot and advance in one atomic step; a separate Load+Add
 	// hands the same image to concurrent connections.
 	idx := (atomic.AddInt64(&r.current, 1) - 1) % int64(len(r.images))
-	return r.images[idx].fb
+	return &r.images[idx]
 }
 
-func (r *ImageRotator) GetImageForConnection() *fb {
+// GetImageForConnection picks the image for a new connection and reports its
+// configured path so the connection record can name what the client saw.
+func (r *ImageRotator) GetImageForConnection() (*fb, string) {
 	atomic.AddInt64(&r.connections, 1)
-	return r.GetImage()
+	e := r.pick()
+	return e.fb, e.path
 }
 
 func (r *ImageRotator) GetStats() map[string]interface{} {

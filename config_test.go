@@ -16,7 +16,7 @@ func writeConfig(t *testing.T, body string) string {
 }
 
 func TestConfigCurrentKeys(t *testing.T) {
-	cfg, err := loadConfig(writeConfig(t, `
+	cfg, _, err := loadConfig(writeConfig(t, `
 [global]
 name = "Acme"
 branding = false
@@ -47,7 +47,7 @@ image = "default.png"
 // The 2.0 spellings must keep working: no_brand is the inverse of branding,
 // show_ip maps to show_client_ip and server_name to name.
 func TestConfigDeprecatedKeys(t *testing.T) {
-	cfg, err := loadConfig(writeConfig(t, `
+	cfg, _, err := loadConfig(writeConfig(t, `
 [global]
 no_brand = true
 show_ip = true
@@ -73,7 +73,7 @@ image = "default.png"
 
 // Branding is opt-out, so a config that mentions neither key gets it enabled.
 func TestConfigBrandingDefaultsOn(t *testing.T) {
-	cfg, err := loadConfig(writeConfig(t, `
+	cfg, _, err := loadConfig(writeConfig(t, `
 [server.a]
 listen = ":5900"
 image = "default.png"
@@ -91,7 +91,7 @@ image = "default.png"
 
 // The new key wins when a config carries both spellings.
 func TestConfigNewKeyBeatsDeprecated(t *testing.T) {
-	cfg, err := loadConfig(writeConfig(t, `
+	cfg, _, err := loadConfig(writeConfig(t, `
 [global]
 branding = true
 no_brand = true
