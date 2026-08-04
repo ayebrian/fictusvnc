@@ -14,6 +14,11 @@ show_client_ip = false
 show_rdns = false
 show_time = false
 
+# Maximum clients served at once, across every listener. Each connection can
+# hold a private framebuffer copy when the info banner is on, so an unbounded
+# server is easy to exhaust. 0 disables the cap.
+max_connections = 512
+
 # Logging. The whole section is optional.
 [logging]
 # debug | info | warn | error

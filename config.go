@@ -22,6 +22,14 @@ const (
 	encZRLE = 16
 
 	zrleTileSize = 64
+
+	// secTypeNone is the only security type this server offers.
+	secTypeNone = 1
+
+	// defaultMaxConnections bounds concurrent clients. Each connection can
+	// hold a private framebuffer copy when the info banner is on, so an
+	// unbounded server is trivially exhausted by a flood.
+	defaultMaxConnections = 512
 )
 
 type Config struct {
@@ -36,6 +44,10 @@ type GlobalConfig struct {
 	ShowClientIP bool   `toml:"show_client_ip"`
 	ShowRDNS     bool   `toml:"show_rdns"`
 	ShowTime     bool   `toml:"show_time"`
+
+	// MaxConnections caps concurrent clients across every listener. 0 means
+	// unlimited; when the key is absent it defaults to defaultMaxConnections.
+	MaxConnections int `toml:"max_connections"`
 
 	// Deprecated 2.0 spellings, still accepted so existing configs keep
 	// working. Branding is the inverse of NoBrand.
@@ -110,6 +122,15 @@ func loadConfig(path string) (Config, []string, error) {
 			s.Name = s.ServerName
 			cfg.Server[id] = s
 		}
+	}
+
+	// An absent key gets the safe default; an explicit 0 means "unlimited"
+	// and must survive.
+	if !md.IsDefined("global", "max_connections") {
+		cfg.Global.MaxConnections = defaultMaxConnections
+	} else if cfg.Global.MaxConnections < 0 {
+		warn("'max_connections' cannot be negative, treating %d as unlimited", cfg.Global.MaxConnections)
+		cfg.Global.MaxConnections = 0
 	}
 
 	if cfg.Global.Name == "" {

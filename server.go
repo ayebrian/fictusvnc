@@ -153,17 +153,59 @@ func (e *connEvent) emit(log *slog.Logger) {
 	log.Info("connection", attrs...)
 }
 
+// connLimiter caps how many clients are served at once. It is shared by every
+// listener, because the resource being protected — memory held by per-client
+// framebuffer copies — is process-wide, not per-port. A nil limiter is
+// unlimited, so the zero value stays usable in tests.
+type connLimiter struct {
+	slots chan struct{}
+}
+
+func newConnLimiter(max int) *connLimiter {
+	if max <= 0 {
+		return nil
+	}
+	return &connLimiter{slots: make(chan struct{}, max)}
+}
+
+// acquire takes a slot without blocking, reporting whether one was free.
+func (l *connLimiter) acquire() bool {
+	if l == nil {
+		return true
+	}
+	select {
+	case l.slots <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func (l *connLimiter) release() {
+	if l != nil {
+		<-l.slots
+	}
+}
+
+func (l *connLimiter) capacity() int {
+	if l == nil {
+		return 0
+	}
+	return cap(l.slots)
+}
+
 type vncServer struct {
 	ln      net.Listener
 	rotator *ImageRotator
 	name    string
 	log     *slog.Logger
 	overlay overlayConfig
+	limiter *connLimiter
 }
 
 // newVNCServer binds the listener up front so bind failures are reported
 // before the process claims to be running.
-func newVNCServer(addr string, rotator *ImageRotator, serverName string, overlay overlayConfig, log *slog.Logger) (*vncServer, error) {
+func newVNCServer(addr string, rotator *ImageRotator, serverName string, overlay overlayConfig, limiter *connLimiter, log *slog.Logger) (*vncServer, error) {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to listen on %s: %w", addr, err)
@@ -179,7 +221,14 @@ func newVNCServer(addr string, rotator *ImageRotator, serverName string, overlay
 		"first_image_height", firstImg.h,
 	)
 
-	return &vncServer{ln: ln, rotator: rotator, name: serverName, log: log, overlay: overlay}, nil
+	return &vncServer{
+		ln:      ln,
+		rotator: rotator,
+		name:    serverName,
+		log:     log,
+		overlay: overlay,
+		limiter: limiter,
+	}, nil
 }
 
 func (s *vncServer) close() { s.ln.Close() }
@@ -195,7 +244,22 @@ func (s *vncServer) serve() {
 			time.Sleep(time.Second)
 			continue
 		}
-		go serveWithRotator(c, s.rotator, s.name, s.log, s.overlay)
+
+		if !s.limiter.acquire() {
+			// Still worth a record: a flood that trips the cap is exactly
+			// what an operator wants to see, and it aggregates with every
+			// other connection outcome.
+			ev := &connEvent{start: time.Now(), outcome: "connection_limit"}
+			ev.peerIP, ev.peerPort = splitPeer(c.RemoteAddr())
+			ev.emit(s.log)
+			c.Close()
+			continue
+		}
+
+		go func() {
+			defer s.limiter.release()
+			serveWithRotator(c, s.rotator, s.name, s.log, s.overlay)
+		}()
 	}
 }
 
@@ -268,7 +332,20 @@ func session(c net.Conn, rotator *ImageRotator, serverName string, log *slog.Log
 	}
 	ev.clientVersion = strings.TrimSpace(string(version))
 
-	if _, err := c.Write([]byte{1, 1}); err != nil {
+	major, minor, ok := parseRFBVersion(version)
+	if !ok {
+		log.Debug("malformed RFB version greeting", "raw", ev.clientVersion)
+		return "malformed_version"
+	}
+	if !supportedRFBVersion(major, minor) {
+		// Pre-3.7 clients expect the server to choose the security type over
+		// a different message flow; there is no correct reply to send them
+		// here, so hang up rather than desync.
+		log.Debug("unsupported RFB version", "major", major, "minor", minor)
+		return "unsupported_version"
+	}
+
+	if _, err := c.Write([]byte{1, secTypeNone}); err != nil {
 		return "security_write_failed"
 	}
 
@@ -277,6 +354,13 @@ func session(c net.Conn, rotator *ImageRotator, serverName string, log *slog.Log
 		return "security_read_failed"
 	}
 	ev.securityType = int(sec[0])
+	if sec[0] != secTypeNone {
+		// Only "None" was offered. Report the refusal properly instead of
+		// pretending the handshake succeeded.
+		log.Debug("client picked a security type that was not offered", "type", sec[0])
+		writeSecurityFailure(c, "Unsupported security type")
+		return "bad_security_type"
+	}
 
 	if _, err := c.Write(make([]byte, 4)); err != nil {
 		return "security_result_write_failed"

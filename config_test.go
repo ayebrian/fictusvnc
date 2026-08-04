@@ -104,6 +104,32 @@ no_brand = true
 	}
 }
 
+// An absent max_connections must fall back to the safe default, while an
+// explicit 0 is a deliberate "unlimited" and has to survive.
+func TestConfigMaxConnections(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want int
+	}{
+		{"absent uses the default", "[server.a]\nlisten = \":5900\"\n", defaultMaxConnections},
+		{"explicit zero means unlimited", "[global]\nmax_connections = 0\n", 0},
+		{"explicit value is kept", "[global]\nmax_connections = 32\n", 32},
+		{"negative is clamped to unlimited", "[global]\nmax_connections = -1\n", 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, _, err := loadConfig(writeConfig(t, tt.body))
+			if err != nil {
+				t.Fatalf("loadConfig: %v", err)
+			}
+			if cfg.Global.MaxConnections != tt.want {
+				t.Errorf("max_connections: got %d want %d", cfg.Global.MaxConnections, tt.want)
+			}
+		})
+	}
+}
+
 func TestListenAddrs(t *testing.T) {
 	tests := []struct {
 		name string

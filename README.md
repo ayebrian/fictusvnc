@@ -218,6 +218,23 @@ Standard `KeyEvent` / `PointerEvent` / `ClientCutText` messages are accepted
 and discarded (the server is view-only — it never changes the displayed
 image based on client input).
 
+## Handshake
+
+The server speaks RFB 3.7 and 3.8 and offers exactly one security type,
+`None` (1) — there is no password.
+
+Both halves of the handshake are validated rather than assumed. A greeting that
+is not a well-formed `RFB xxx.yyy` string ends the connection instead of being
+parsed as if the rest of the stream were protocol. RFB 3.3 and older are
+refused, because those revisions put the server in charge of choosing the
+security type over a different message flow. A client that selects a security
+type that was never offered gets a proper RFB 3.8 failure result — status 1
+plus a reason string — instead of a silent success.
+
+Each case lands in the connection log with its own `outcome`
+(`malformed_version`, `unsupported_version`, `bad_security_type`), which makes
+misbehaving scanners easy to separate from real clients.
+
 ## Configuration Options
 
 ### Global Section
@@ -228,6 +245,16 @@ image based on client input).
 | `show_client_ip` | boolean | Draw the client IP on the image                   | `false`       |
 | `show_rdns`    | boolean | Add the client's reverse-DNS name to the banner   | `false`       |
 | `show_time`    | boolean | Add the connection timestamp to the banner        | `false`       |
+| `max_connections` | int  | Concurrent clients across all listeners, `0` = unlimited | `512`     |
+
+#### Connection limit
+
+`max_connections` bounds how many clients are served at once, counted across
+every listener rather than per port — the resource it protects is process-wide
+memory, since each connection can hold its own framebuffer copy while the info
+banner is enabled. Clients arriving over the cap are closed immediately, before
+any greeting, and recorded with `outcome: "connection_limit"` so a flood shows
+up in the same aggregation as every other connection.
 
 #### Client info banner
 

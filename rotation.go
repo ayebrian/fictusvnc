@@ -145,22 +145,3 @@ func (r *ImageRotator) GetImageForConnection() (*fb, string) {
 	e := r.pick()
 	return e.fb, e.path
 }
-
-func (r *ImageRotator) GetStats() map[string]interface{} {
-	stats := make(map[string]interface{})
-	stats["mode"] = r.mode
-	stats["total_images"] = len(r.images)
-	stats["total_connections"] = atomic.LoadInt64(&r.connections)
-	stats["current_index"] = atomic.LoadInt64(&r.current)
-
-	imageStats := make([]map[string]interface{}, len(r.images))
-	for i, img := range r.images {
-		imageStats[i] = map[string]interface{}{
-			"path":   img.path,
-			"weight": img.weight,
-		}
-	}
-	stats["images"] = imageStats
-
-	return stats
-}

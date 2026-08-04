@@ -80,6 +80,10 @@ func main() {
 		os.Exit(1)
 	}
 
+	// One limiter for the whole process: the memory it protects is shared by
+	// every listener.
+	limiter := newConnLimiter(cfg.Global.MaxConnections)
+
 	var servers []*vncServer
 	for serverID, s := range cfg.Server {
 		rotator, err := NewImageRotator(s, baseDir)
@@ -103,7 +107,7 @@ func main() {
 			continue
 		}
 		for _, addr := range addrs {
-			srv, err := newVNCServer(addr, rotator, name, cfg.Global.overlay(), log)
+			srv, err := newVNCServer(addr, rotator, name, cfg.Global.overlay(), limiter, log)
 			if err != nil {
 				log.Warn("failed to bind listener", "server", name, "listen", addr, "error", err)
 				continue
@@ -120,7 +124,7 @@ func main() {
 	for _, srv := range servers {
 		go srv.serve()
 	}
-	log.Info("ready", "listeners", len(servers))
+	log.Info("ready", "listeners", len(servers), "max_connections", limiter.capacity())
 
 	// Block until the process is asked to stop, so a shutdown is clean and a
 	// zero-listener config can never leave the process hanging silently.
