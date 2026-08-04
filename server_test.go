@@ -62,6 +62,10 @@ func fbUpdateRequest(incremental byte) []byte {
 // startTestServer spins up a listener backed by a single-image rotator and
 // returns a connected, fully handshaked client.
 func startTestServer(t *testing.T, f *fb) net.Conn {
+	return startTestServerWith(t, f, overlayConfig{})
+}
+
+func startTestServerWith(t *testing.T, f *fb, overlay overlayConfig) net.Conn {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -77,7 +81,7 @@ func startTestServer(t *testing.T, f *fb) net.Conn {
 		if err != nil {
 			return
 		}
-		serveWithRotator(c, testRotator(f), "test", testLogger(), overlayConfig{})
+		serveWithRotator(c, testRotator(f), "test", testLogger(), overlay)
 	}()
 	t.Cleanup(wg.Wait)
 
@@ -211,6 +215,87 @@ func TestClientIPHandlesIPv6(t *testing.T) {
 		if got := clientIP(addr); got != tt.want {
 			t.Errorf("clientIP(%s): got %q want %q", tt.addr, got, tt.want)
 		}
+	}
+}
+
+// stubRDNS replaces the resolver and counts how often it is consulted, so the
+// laziness of the overlay build is observable.
+func stubRDNS(t *testing.T) *int {
+	t.Helper()
+	calls := 0
+	orig := lookupRDNS
+	lookupRDNS = func(ip string) string {
+		calls++
+		return "stub.example.org"
+	}
+	t.Cleanup(func() { lookupRDNS = orig })
+	return &calls
+}
+
+// The overlay costs a framebuffer copy and, with show_rdns, a DNS query. A
+// client that handshakes but never asks for a frame — the typical scanner —
+// must not trigger either.
+func TestOverlayIsBuiltLazily(t *testing.T) {
+	calls := stubRDNS(t)
+	src := makeTestFB(64, 64)
+	overlay := overlayConfig{showIP: true, showRDNS: true}
+
+	// Handshake only, then hang up. The lookup can only be triggered by a
+	// FramebufferUpdateRequest, which is never sent, so this is race-free to
+	// assert immediately.
+	conn := startTestServerWith(t, src, overlay)
+	conn.Close()
+	if *calls != 0 {
+		t.Fatalf("rDNS was resolved for a client that never requested a frame (%d calls)", *calls)
+	}
+}
+
+// When a frame is requested, the overlay must actually be applied — and the
+// lookup must run exactly once no matter how many updates follow.
+func TestOverlayIsAppliedOnFirstUpdate(t *testing.T) {
+	calls := stubRDNS(t)
+	src := makeTestFB(64, 64)
+	conn := startTestServerWith(t, src, overlayConfig{showIP: true, showRDNS: true})
+
+	readFrame := func() []byte {
+		t.Helper()
+		conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		hdr := make([]byte, 16) // update header + rectangle header
+		mustRead(t, conn, hdr)
+		if e := binary.BigEndian.Uint32(hdr[12:16]); e != encRaw {
+			t.Fatalf("encoding: got %d want raw", e)
+		}
+		data := make([]byte, src.w*src.h*4)
+		mustRead(t, conn, data)
+		return data
+	}
+
+	if _, err := conn.Write(fbUpdateRequest(0)); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+	frame := readFrame()
+
+	// The default 32bpp little-endian format reproduces the internal BGRX
+	// layout byte for byte, so the frame can be compared against the source.
+	topLeft := 2*src.w*4 + 2*4
+	if frame[topLeft] == src.data[topLeft] && frame[topLeft+1] == src.data[topLeft+1] {
+		t.Error("top-left pixel unchanged: the banner was not drawn on the served frame")
+	}
+	bottomRight := (src.h-1)*src.w*4 + (src.w-1)*4
+	for i := range 3 {
+		if frame[bottomRight+i] != src.data[bottomRight+i] {
+			t.Errorf("pixel outside the banner changed at byte %d", i)
+		}
+	}
+
+	// A second full update reuses the already-built overlay.
+	if _, err := conn.Write(fbUpdateRequest(0)); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+	readFrame()
+
+	if *calls != 1 {
+		t.Errorf("rDNS lookups: got %d want exactly 1", *calls)
 	}
 }
 

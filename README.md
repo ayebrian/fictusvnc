@@ -270,12 +270,13 @@ Host: bot.internet-census.example.org
 Time: 2026-08-03 21:53:12 UTC
 ```
 
-`show_rdns` is worth thinking about before enabling. It performs one PTR lookup
-per incoming connection, bounded at 700 ms, and that lookup happens before the
-RFB handshake — so it delays the greeting slightly, which is itself a signal to
-whoever is probing you. It also queries the client's own DNS authority, telling
-that operator you looked them up. With the flag off no DNS traffic is generated
-at all. Clients with no PTR record show `(no PTR record)`.
+`show_rdns` is worth thinking about before enabling. It performs a PTR lookup,
+bounded at 700 ms, that queries the client's own DNS authority — telling that
+operator you looked them up. The banner (and the lookup) is only built when a
+client actually requests its first frame, so the RFB greeting is never delayed
+and the scanners that merely open a socket and vanish trigger no DNS traffic
+and no framebuffer copy. With the flag off no DNS traffic is generated at all.
+Clients with no PTR record show `(no PTR record)`.
 
 `show_time` uses the server's local timezone.
 

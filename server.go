@@ -24,8 +24,8 @@ const (
 	// maxCutTextLen caps ClientCutText so a bogus length cannot make the
 	// server drain gigabytes, and cannot overflow int on 32-bit builds.
 	maxCutTextLen = 1 << 20
-	// rdnsTimeout bounds the reverse lookup. It runs before the handshake,
-	// so a slow or unreachable PTR authority must not stall the connection.
+	// rdnsTimeout bounds the reverse lookup, so a slow or unreachable PTR
+	// authority cannot stall the first framebuffer update for long.
 	rdnsTimeout = 700 * time.Millisecond
 	// maxLoggedEncodings caps the encoding list kept for fingerprinting. The
 	// order of the first handful identifies the client software; the tail is
@@ -65,8 +65,9 @@ func (o overlayConfig) lines(ip, rdns string, now time.Time) []string {
 }
 
 // lookupRDNS resolves the PTR record for ip, returning "" when there is none
-// or the lookup does not finish in time.
-func lookupRDNS(ip string) string {
+// or the lookup does not finish in time. It is a variable so tests can stub
+// the resolver and assert when a lookup actually happens.
+var lookupRDNS = func(ip string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), rdnsTimeout)
 	defer cancel()
 
@@ -307,13 +308,23 @@ func session(c net.Conn, rotator *ImageRotator, serverName string, log *slog.Log
 	f, imagePath := rotator.GetImageForConnection()
 	ev.image = imagePath
 
-	if overlay.needsRDNS() {
-		ev.rdns = lookupRDNS(ev.peerIP)
-	}
-
+	// The overlay costs a full framebuffer copy — ~8 MB at 1080p — plus a PTR
+	// lookup when show_rdns is on, so it is built lazily on the first update
+	// request. Scanners that connect and drop, the overwhelming majority of
+	// traffic on an exposed honeypot, never pay for it, and the greeting is
+	// never delayed by DNS. The overlay keeps the image dimensions, so
+	// ServerInit can be answered from the original frame.
 	clientFB := f
-	if overlay.enabled() {
-		clientFB = addIPOverlay(f, overlay.lines(ev.peerIP, ev.rdns, time.Now())...)
+	overlayBuilt := !overlay.enabled()
+	getFB := func() *fb {
+		if !overlayBuilt {
+			if overlay.needsRDNS() {
+				ev.rdns = lookupRDNS(ev.peerIP)
+			}
+			clientFB = addIPOverlay(f, overlay.lines(ev.peerIP, ev.rdns, time.Now())...)
+			overlayBuilt = true
+		}
+		return clientFB
 	}
 
 	// Handshake steps are short; one deadline covers reads and writes.
@@ -373,7 +384,7 @@ func session(c net.Conn, rotator *ImageRotator, serverName string, log *slog.Log
 
 	pf := pixelFormat{32, 24, 0, 1, 255, 255, 255, 16, 8, 0, [3]byte{}}
 	ev.pixelBPP, ev.pixelDepth = int(pf.BPP), int(pf.Depth)
-	if err := sendServerInit(c, clientFB.w, clientFB.h, pf, serverName); err != nil {
+	if err := sendServerInit(c, f.w, f.h, pf, serverName); err != nil {
 		return "server_init_failed"
 	}
 	ev.handshake = true
@@ -481,12 +492,13 @@ func session(c net.Conn, rotator *ImageRotator, serverName string, log *slog.Log
 				log.Error("failed to set write deadline", "error", err)
 				return "setup_error"
 			}
+			fbOut := getFB()
 			if enc, ok := newCPIXELEncoder(pf); supportsZRLE && ok {
 				ev.encodingUsed = "zrle"
-				err = sendFramebufferZRLE(c, clientFB, enc, zstream)
+				err = sendFramebufferZRLE(c, fbOut, enc, zstream)
 			} else {
 				ev.encodingUsed = "raw"
-				err = sendFramebuffer(c, clientFB, pf)
+				err = sendFramebuffer(c, fbOut, pf)
 			}
 			if err != nil {
 				return "update_write_failed"
