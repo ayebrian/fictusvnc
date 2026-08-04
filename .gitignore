@@ -5,6 +5,7 @@ images/*
 !config.example.toml
 
 build/
+dist/
 fictusvnc
 fictusvnc-*
 fictusvnc.exe

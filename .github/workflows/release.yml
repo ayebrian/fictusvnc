@@ -21,60 +21,14 @@ jobs:
       - name: Build binaries
         run: |
           chmod +x ./build.sh
-          ./build.sh
+          # Embed the tag as the version, without the leading "v".
+          VERSION="${GITHUB_REF_NAME#v}" ./build.sh
 
-      # =========================
-      #  NEW – pack release sets
-      # =========================
       - name: Package release bundles
         run: |
-          set -e
-          echo "🔍 CWD before cd: $(pwd)"
-          echo "📂 Listing:"
-          ls -la || true
+          chmod +x ./package.sh
+          ./package.sh
 
-          cd "${GITHUB_WORKSPACE:-/github/workspace}" || exit 1
-
-          echo "📦 In workspace: $(pwd)"
-          echo "🗃️  Files:"
-          ls -la
-          echo "🖼️  Images:"
-          ls -la images || true
-
-          mkdir -p dist
-
-          # --- *nix tarballs --------------------------
-          for os in linux darwin; do
-            for arch in amd64 arm64 386; do
-              bin_path="build/fictusvnc-${os}-${arch}"
-              [ -f "$bin_path" ] || continue
-
-              workdir="dist/${os}-${arch}"
-              mkdir -p "$workdir/images"
-              cp "$bin_path" "$workdir/fictusvnc"
-              chmod +x "$workdir/fictusvnc"
-              cp config.example.toml "$workdir/config.toml"
-              cp images/default.png "$workdir/images/"
-
-              # Create tar.gz with files in root (no folder)
-              tar -C "$workdir" -czf "build/fictusvnc-${os}-${arch}.tar.gz" .
-            done
-          done
-
-          # --- Windows ZIPs --------------------------
-          for arch in amd64 386; do
-            bin_path="build/fictusvnc-windows-${arch}.exe"
-            [ -f "$bin_path" ] || continue
-
-            workdir="dist/windows-${arch}"
-            mkdir -p "$workdir/images"
-            cp "$bin_path" "$workdir/fictusvnc.exe"
-            cp config.example.toml "$workdir/config.toml"
-            cp images/default.png "$workdir/images/"
-
-            # Create zip with files in root (no folder)
-            (cd "$workdir" && zip -r "../../build/fictusvnc-windows-${arch}.zip" .)
-          done
       - name: Create Release
         id: create_release
         if: github.ref_type == 'tag' && github.actor != 'nektos/act'

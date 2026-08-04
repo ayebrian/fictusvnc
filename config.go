@@ -6,8 +6,12 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
+// appVersion can be overridden at build time with
+// -ldflags "-X main.appVersion=...". build.sh injects a git-derived version in
+// CI (e.g. 2.1.0-dev.gabc1234); a plain build reports the baseline below.
+var appVersion = "2.1.0"
+
 const (
-	appVersion              = "2.1.0"
 	rfbVersion              = "RFB 003.008\n"
 	msgSetPixelFormat       = 0
 	msgSetEncodings         = 2

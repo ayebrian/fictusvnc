@@ -5,7 +5,14 @@ NAME="fictusvnc"
 OUTDIR="build"
 mkdir -p "$OUTDIR"
 
-FLAGS=(-ldflags="-s -w")
+# Strip debug info; inject the version when VERSION is set (CI passes a
+# git-derived string). The value never contains spaces, so it stays a single
+# -ldflags argument.
+LDFLAGS="-s -w"
+if [[ -n "${VERSION:-}" ]]; then
+  LDFLAGS="$LDFLAGS -X main.appVersion=${VERSION}"
+fi
+FLAGS=(-ldflags="$LDFLAGS")
 
 PLATFORMS=(
   "linux/amd64"
