@@ -280,6 +280,27 @@ Clients with no PTR record show `(no PTR record)`.
 
 `show_time` uses the server's local timezone.
 
+All three flags can also be set on an individual server, where they override
+the `[global]` default. An unset key inherits; a key set to `false` switches a
+globally enabled line back off. That makes mixed setups straightforward — the
+banner on the servers you are watching, nothing on the ones meant to look
+untouched:
+
+```toml
+[global]
+show_client_ip = true      # default for every server
+
+[server.watched]
+listen = "0.0.0.0:5900"
+image = "desktop.png"
+show_rdns = true           # this one also resolves the client name
+
+[server.clean]
+listen = "0.0.0.0:5901"
+image = "desktop.png"
+show_client_ip = false     # no banner here at all
+```
+
 ### Logging Section
 
 | Parameter | Type   | Description                              | Default    |
@@ -352,6 +373,9 @@ the live file would stay empty.
 | `rotation_mode` | string | `"random"` or `"sequential"` (ignored if using `image`) | `"random"`      |
 | `start_port`    | int    | Start of port range                                     | -               |
 | `end_port`      | int    | End of port range                                       | -               |
+| `show_client_ip` | bool  | Override the global banner setting for this server      | inherits        |
+| `show_rdns`     | bool   | Override the global banner setting for this server      | inherits        |
+| `show_time`     | bool   | Override the global banner setting for this server      | inherits        |
 
 Image paths are resolved relative to the directory holding the config file
 (inside its `images/` subdirectory), so the server behaves identically whether

@@ -5,8 +5,8 @@ name = "FictusVNC"
 branding = true
 show_client_ip = false
 
-# Extra banner lines. Both need show_client_ip-style overlay to be useful and
-# are off by default.
+# Banner defaults. Every one of these three can be overridden per server —
+# see [server.static_server] at the bottom.
 #   show_rdns — reverse-DNS name of the client. Costs one PTR lookup per
 #               client that requests a frame (700ms timeout) and tells the
 #               client's DNS operator that you looked them up.
@@ -70,3 +70,7 @@ image = "default.png"
 listen = "0.0.0.0:5903"
 name = "Static Server"
 image = "default.png"
+# Per-server banner overrides. An unset key inherits [global]; a set one wins,
+# so an explicit false switches a globally enabled line back off.
+show_client_ip = true
+show_time = true

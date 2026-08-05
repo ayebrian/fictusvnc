@@ -130,6 +130,98 @@ func TestConfigMaxConnections(t *testing.T) {
 	}
 }
 
+// Banner flags are set globally and overridden per server. The interesting
+// case is an explicit false switching a globally enabled line back off — the
+// reason the server fields are pointers.
+func TestOverlayPerServerOverrides(t *testing.T) {
+	cfg, _, err := loadConfig(writeConfig(t, `
+[global]
+show_client_ip = true
+show_time = true
+
+# Inherits everything from [global].
+[server.inherits]
+listen = ":5900"
+image = "d.png"
+
+# Turns the globally enabled lines back off.
+[server.opts_out]
+listen = ":5901"
+image = "d.png"
+show_client_ip = false
+show_time = false
+
+# Adds a line [global] leaves off, keeps the inherited ones.
+[server.adds_rdns]
+listen = ":5902"
+image = "d.png"
+show_rdns = true
+`))
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+
+	tests := []struct {
+		server           string
+		wantIP, wantRDNS bool
+		wantTime         bool
+	}{
+		{"inherits", true, false, true},
+		{"opts_out", false, false, false},
+		{"adds_rdns", true, true, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.server, func(t *testing.T) {
+			got := cfg.Global.overlayFor(cfg.Server[tt.server])
+			if got.showIP != tt.wantIP {
+				t.Errorf("showIP: got %v want %v", got.showIP, tt.wantIP)
+			}
+			if got.showRDNS != tt.wantRDNS {
+				t.Errorf("showRDNS: got %v want %v", got.showRDNS, tt.wantRDNS)
+			}
+			if got.showTime != tt.wantTime {
+				t.Errorf("showTime: got %v want %v", got.showTime, tt.wantTime)
+			}
+		})
+	}
+}
+
+// With no [global] section at all, a server can still enable a line on its own.
+func TestOverlayServerOnlyWithoutGlobal(t *testing.T) {
+	cfg, _, err := loadConfig(writeConfig(t, `
+[server.a]
+listen = ":5900"
+image = "d.png"
+show_client_ip = true
+`))
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	got := cfg.Global.overlayFor(cfg.Server["a"])
+	if !got.showIP {
+		t.Error("a server-level show_client_ip must work without a [global] section")
+	}
+	if got.showRDNS || got.showTime {
+		t.Error("unset lines must stay off")
+	}
+}
+
+func TestBoolOr(t *testing.T) {
+	tr, fa := true, false
+	if got := boolOr(nil, true); !got {
+		t.Error("nil override must fall back to the global value")
+	}
+	if got := boolOr(nil, false); got {
+		t.Error("nil override must fall back to the global value")
+	}
+	if got := boolOr(&fa, true); got {
+		t.Error("an explicit false must beat a global true")
+	}
+	if got := boolOr(&tr, false); !got {
+		t.Error("an explicit true must beat a global false")
+	}
+}
+
 func TestListenAddrs(t *testing.T) {
 	tests := []struct {
 		name string

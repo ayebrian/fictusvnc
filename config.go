@@ -59,13 +59,23 @@ type GlobalConfig struct {
 	ShowIP  bool `toml:"show_ip"`
 }
 
-// overlay returns the banner settings implied by the global config.
-func (g GlobalConfig) overlay() overlayConfig {
+// overlayFor resolves the banner settings for one server: a value set on the
+// server wins, otherwise the global default applies. Server fields are
+// pointers precisely so that an explicit `false` can switch a globally
+// enabled line back off, which a plain bool could not express.
+func (g GlobalConfig) overlayFor(s ServerConfig) overlayConfig {
 	return overlayConfig{
-		showIP:   g.ShowClientIP,
-		showRDNS: g.ShowRDNS,
-		showTime: g.ShowTime,
+		showIP:   boolOr(s.ShowClientIP, g.ShowClientIP),
+		showRDNS: boolOr(s.ShowRDNS, g.ShowRDNS),
+		showTime: boolOr(s.ShowTime, g.ShowTime),
 	}
+}
+
+func boolOr(override *bool, fallback bool) bool {
+	if override != nil {
+		return *override
+	}
+	return fallback
 }
 
 type WeightedImage struct {
@@ -81,6 +91,13 @@ type ServerConfig struct {
 	StartPort    int             `toml:"start_port"`
 	EndPort      int             `toml:"end_port"`
 	RotationMode string          `toml:"rotation_mode"` // "random", "sequential"
+
+	// Banner overrides. Nil means "inherit the [global] setting"; a set
+	// value wins, so one server can carry the banner while the rest stay
+	// clean, or vice versa.
+	ShowClientIP *bool `toml:"show_client_ip"`
+	ShowRDNS     *bool `toml:"show_rdns"`
+	ShowTime     *bool `toml:"show_time"`
 
 	// Deprecated 2.0 spelling of Name.
 	ServerName string `toml:"server_name"`

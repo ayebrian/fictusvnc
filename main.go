@@ -107,7 +107,7 @@ func main() {
 			continue
 		}
 		for _, addr := range addrs {
-			srv, err := newVNCServer(addr, rotator, name, cfg.Global.overlay(), limiter, log)
+			srv, err := newVNCServer(addr, rotator, name, cfg.Global.overlayFor(s), limiter, log)
 			if err != nil {
 				log.Warn("failed to bind listener", "server", name, "listen", addr, "error", err)
 				continue
