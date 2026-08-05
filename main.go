@@ -22,6 +22,7 @@ var (
 
 func main() {
 	configPath := flag.String("config", "", "Path to TOML config file (default: ./config.toml)")
+	checkOnly := flag.Bool("check", false, "Validate the config, print a summary and exit without listening")
 	flag.BoolVar(&showVersion, "version", false, "Show version and exit")
 	flag.BoolVar(&showVersion, "v", false, "Show version and exit (shorthand)")
 	flag.Parse()
@@ -51,6 +52,20 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Image paths are resolved relative to the config file, not the working
+	// directory, so the server behaves the same started by hand or by systemd.
+	baseDir, err := filepath.Abs(filepath.Dir(*configPath))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to resolve config directory: %v\n", err)
+		os.Exit(1)
+	}
+
+	// --check reports to stdout in plain text and never touches the logger,
+	// which would otherwise emit JSON into the middle of the summary.
+	if *checkOnly {
+		os.Exit(runCheck(os.Stdout, cfg, warnings, baseDir, *configPath))
+	}
+
 	log, closeLog, err := setupLogging(cfg.Logging)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to set up logging: %v\n", err)
@@ -71,14 +86,6 @@ func main() {
 		"go_version", runtime.Version(),
 		"config", *configPath,
 	)
-
-	// Image paths are resolved relative to the config file, not the working
-	// directory, so the server behaves the same started by hand or by systemd.
-	baseDir, err := filepath.Abs(filepath.Dir(*configPath))
-	if err != nil {
-		log.Error("failed to resolve config directory", "error", err)
-		os.Exit(1)
-	}
 
 	// One limiter for the whole process: the memory it protects is shared by
 	// every listener.

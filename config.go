@@ -2,6 +2,9 @@ package main
 
 import (
 	"fmt"
+	"maps"
+	"net"
+	"slices"
 
 	"github.com/BurntSushi/toml"
 )
@@ -137,11 +140,43 @@ func loadConfig(path string) (Config, []string, error) {
 		cfg.Global.ShowClientIP = cfg.Global.ShowIP
 	}
 
-	for id, s := range cfg.Server {
+	// Keys present in the file that matched no field are almost always typos.
+	// Without this they are silently dropped and the option simply appears not
+	// to work. Undecoded() also catches a mistyped section name and typos
+	// nested inside a server's inline image tables.
+	for _, k := range md.Undecoded() {
+		warn("unknown key %q — check the spelling, it is being ignored", k.String())
+	}
+
+	// Sorted, so the warning list is stable between runs rather than following
+	// Go's randomised map order.
+	for _, id := range slices.Sorted(maps.Keys(cfg.Server)) {
+		s := cfg.Server[id]
 		if s.Name == "" && s.ServerName != "" {
 			warn("server %q uses deprecated 'server_name', use 'name'", id)
 			s.Name = s.ServerName
 			cfg.Server[id] = s
+		}
+
+		switch s.RotationMode {
+		case "", "random", "sequential":
+		default:
+			warn("server %q has rotation_mode = %q, expected \"random\" or \"sequential\"; using random",
+				id, s.RotationMode)
+		}
+
+		// Both forms of image config set: the array wins in NewImageRotator,
+		// so say so rather than let the single image vanish.
+		if s.Image != "" && len(s.Images) > 0 {
+			warn("server %q sets both 'image' and 'images'; 'images' wins and 'image' (%q) is ignored",
+				id, s.Image)
+		}
+
+		// A port range overrides whatever port sits in 'listen'.
+		if s.StartPort > 0 && s.EndPort > 0 && s.EndPort >= s.StartPort {
+			if _, port, err := net.SplitHostPort(s.Listen); err == nil && port != "" {
+				warn("server %q sets a port range, so the port %q in 'listen' is ignored", id, port)
+			}
 		}
 	}
 

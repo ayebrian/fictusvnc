@@ -84,6 +84,7 @@ Then run:
 | Flag              | Description                                      | Default Value     |
 | ----------------- | ------------------------------------------------ | ----------------- |
 | `--config`        | Path to TOML configuration file                  | `./config.toml`  |
+| `--check`         | Validate the config, print a summary and exit    | `false`           |
 | `--version`, `-v` | Show version and exit                            | `false`           |
 
 **Note:** Starting with v2.0.0, all other options (`--name`, `--no-brand`, `--show-ip`) have been moved to the configuration file under the `[global]` section.
@@ -234,6 +235,46 @@ plus a reason string — instead of a silent success.
 Each case lands in the connection log with its own `outcome`
 (`malformed_version`, `unsupported_version`, `bad_security_type`), which makes
 misbehaving scanners easy to separate from real clients.
+
+## Validating a Config
+
+`--check` parses the config, loads every image and prints what the server
+would do — without binding a single port, so it is safe to run against a live
+host where an instance is already listening:
+
+```
+$ fictusvnc --config config.toml --check
+config: config.toml
+  warning: unknown key "global.show_clientip" — check the spelling, it is being ignored
+  warning: server "a" has rotation_mode = "randam", expected "random" or "sequential"; using random
+
+servers:
+  [a] Reception
+      listen: 0.0.0.0:5900
+      images: 2 (random)
+        desktop_work.png              1920x1080 weight 70
+        desktop_idle.png              1920x1080 weight 30
+      banner: client ip, time
+
+listeners: 1
+max_connections: 512
+logging: json/info -> stdout
+
+config is usable, with 2 warning(s)
+```
+
+It exits non-zero when something would actually stop a server from starting —
+a missing or corrupt image, a server with no listen address, two servers
+claiming the same address (which otherwise only shows up as a bind failure at
+startup), or no `[server.*]` sections at all. Warnings alone do not fail it.
+
+**Unknown keys are reported.** A mistyped key used to be dropped in silence, so
+the option simply appeared not to work; the same went for a mistyped section
+name. Typos are now flagged at every level — `[global]`, `[logging]`, a section
+name, a key inside a server, even a key inside an inline image table — both by
+`--check` and as `WARN` records on a normal start. Settings that quietly
+override one another are flagged too: `image` together with `images`, or a port
+in `listen` together with `start_port`/`end_port`.
 
 ## Configuration Options
 
