@@ -147,7 +147,10 @@ func main() {
 // listenAddrs expands a server entry into the concrete addresses it should
 // bind, honouring an optional start_port/end_port range.
 func listenAddrs(s ServerConfig) []string {
-	if s.StartPort > 0 && s.EndPort > 0 && s.EndPort >= s.StartPort {
+	// A range is honoured only when it is well-formed and within 1..maxPort;
+	// an out-of-range or inverted range falls through to the single Listen
+	// address (or nothing), and never expands into a giant slice.
+	if s.StartPort > 0 && s.EndPort >= s.StartPort && s.EndPort <= maxPort {
 		host := s.Listen
 		// Take the host part of Listen (handles IPv4, bare IPv6 and host:port)
 		// and attach the ranged port.

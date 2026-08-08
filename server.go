@@ -365,16 +365,25 @@ func session(c net.Conn, rotator *ImageRotator, serverName string, log *slog.Log
 		return "security_read_failed"
 	}
 	ev.securityType = int(sec[0])
+	rfb38 := usesRFB38Handshake(major, minor)
 	if sec[0] != secTypeNone {
-		// Only "None" was offered. Report the refusal properly instead of
-		// pretending the handshake succeeded.
+		// Only "None" was offered. RFB 3.8 reports the refusal with a
+		// reason-string SecurityResult; 3.7 has no such message, so the
+		// connection is simply dropped. Either way it ends here.
 		log.Debug("client picked a security type that was not offered", "type", sec[0])
-		writeSecurityFailure(c, "Unsupported security type")
+		if rfb38 {
+			writeSecurityFailure(c, "Unsupported security type")
+		}
 		return "bad_security_type"
 	}
 
-	if _, err := c.Write(make([]byte, 4)); err != nil {
-		return "security_result_write_failed"
+	// RFB 3.8 always sends a SecurityResult, even for None; 3.7 goes straight to
+	// ClientInit. Sending the extra 4 bytes to a 3.7 client shifts every
+	// following field by four bytes and desyncs the whole session.
+	if rfb38 {
+		if _, err := c.Write(make([]byte, 4)); err != nil {
+			return "security_result_write_failed"
+		}
 	}
 
 	var shared [1]byte
@@ -393,6 +402,18 @@ func session(c net.Conn, rotator *ImageRotator, serverName string, log *slog.Log
 	supportsZRLE := false
 	sentUpdate := false
 	zstream := newZRLEStream()
+
+	// The framebuffer is immutable for the life of a connection, so its encoded
+	// bytes are computed once per (frame, pixel format, encoding) and reused.
+	// Without this, a client that spams non-incremental update requests forces a
+	// full re-encode of an unchanging image on every request.
+	var (
+		encBody   []byte
+		encFB     *fb
+		encPF     pixelFormat
+		encZRLEd  bool
+		encCached bool
+	)
 
 	for {
 		if err := c.SetReadDeadline(time.Now().Add(readTimeout)); err != nil {
@@ -493,12 +514,28 @@ func session(c net.Conn, rotator *ImageRotator, serverName string, log *slog.Log
 				return "setup_error"
 			}
 			fbOut := getFB()
-			if enc, ok := newCPIXELEncoder(pf); supportsZRLE && ok {
+			enc, encOK := newCPIXELEncoder(pf)
+			useZRLE := supportsZRLE && encOK
+
+			// Rebuild the encoded body only when the frame, the negotiated
+			// pixel format or the chosen encoding actually changes; otherwise
+			// reuse the cached bytes. (pixelFormat is comparable; its blank
+			// padding field is ignored by ==.)
+			if !encCached || encFB != fbOut || encPF != pf || encZRLEd != useZRLE {
+				if useZRLE {
+					encBody = encodeZRLETiles(fbOut, enc)
+				} else {
+					encBody = rawFramebufferBody(fbOut, pf)
+				}
+				encFB, encPF, encZRLEd, encCached = fbOut, pf, useZRLE, true
+			}
+
+			if useZRLE {
 				ev.encodingUsed = "zrle"
-				err = sendFramebufferZRLE(c, fbOut, enc, zstream)
+				err = writeFramebufferZRLE(c, fbOut.w, fbOut.h, encBody, zstream)
 			} else {
 				ev.encodingUsed = "raw"
-				err = sendFramebuffer(c, fbOut, pf)
+				err = writeRawFramebuffer(c, fbOut.w, fbOut.h, encBody)
 			}
 			if err != nil {
 				return "update_write_failed"

@@ -316,6 +316,61 @@ image = "d.png"
 	}
 }
 
+// --check must reject a logging config that setupLogging would refuse at
+// startup, instead of green-lighting a server that then fails to boot.
+func TestCheckRejectsBadLogLevel(t *testing.T) {
+	cfg, warnings, dir, path := checkFixture(t, `
+[logging]
+level = "verbose"
+
+[server.a]
+listen = "127.0.0.1:5900"
+image = "d.png"
+`)
+	var buf bytes.Buffer
+	if code := runCheck(&buf, cfg, warnings, dir, path); code != 1 {
+		t.Fatalf("exit code: got %d want 1\n%s", code, buf.String())
+	}
+	if !strings.Contains(buf.String(), "unknown log level") {
+		t.Errorf("expected an invalid-log-level error:\n%s", buf.String())
+	}
+}
+
+func TestCheckRejectsBadLogFormat(t *testing.T) {
+	cfg, warnings, dir, path := checkFixture(t, `
+[logging]
+format = "xml"
+
+[server.a]
+listen = "127.0.0.1:5900"
+image = "d.png"
+`)
+	var buf bytes.Buffer
+	if code := runCheck(&buf, cfg, warnings, dir, path); code != 1 {
+		t.Fatalf("exit code: got %d want 1\n%s", code, buf.String())
+	}
+	if !strings.Contains(buf.String(), "unknown log format") {
+		t.Errorf("expected an invalid-log-format error:\n%s", buf.String())
+	}
+}
+
+// A valid, non-default logging section must still pass cleanly.
+func TestCheckAcceptsValidLogging(t *testing.T) {
+	cfg, warnings, dir, path := checkFixture(t, `
+[logging]
+level = "debug"
+format = "text"
+
+[server.a]
+listen = "127.0.0.1:5900"
+image = "d.png"
+`)
+	var buf bytes.Buffer
+	if code := runCheck(&buf, cfg, warnings, dir, path); code != 0 {
+		t.Fatalf("valid logging must pass: got %d\n%s", code, buf.String())
+	}
+}
+
 func TestDescribeOverlay(t *testing.T) {
 	tests := []struct {
 		cfg  overlayConfig

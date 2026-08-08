@@ -198,7 +198,18 @@ func converter(pf pixelFormat) func(dst []byte, r, g, b uint8) int {
 		}
 	case 24:
 		return func(dst []byte, r, g, b uint8) int {
-			dst[0], dst[1], dst[2] = r, g, b
+			v := (uint32(r)&uint32(pf.RMax))<<pf.RShift |
+				(uint32(g)&uint32(pf.GMax))<<pf.GShift |
+				(uint32(b)&uint32(pf.BMax))<<pf.BShift
+			var full [4]byte
+			if pf.BigEndian != 0 {
+				// MSB first; drop the top (unused) byte, keep the low 3.
+				binary.BigEndian.PutUint32(full[:], v)
+				dst[0], dst[1], dst[2] = full[1], full[2], full[3]
+			} else {
+				binary.LittleEndian.PutUint32(full[:], v)
+				dst[0], dst[1], dst[2] = full[0], full[1], full[2]
+			}
 			return 3
 		}
 	case 8:
@@ -216,43 +227,44 @@ func converter(pf pixelFormat) func(dst []byte, r, g, b uint8) int {
 	}
 }
 
-func sendFramebuffer(c net.Conn, f *fb, pf pixelFormat) error {
-	_, err := c.Write([]byte{0, 0})
-	if err != nil {
-		return err
-	}
-
-	err = write16(c, 1)
-	if err != nil {
-		return err
-	}
-
-	err = write16(c, 0, 0, uint16(f.w), uint16(f.h))
-	if err != nil {
-		return err
-	}
-
-	err = write32(c, 0)
-	if err != nil {
-		return err
-	}
-
+// rawFramebufferBody converts the whole framebuffer into the client's pixel
+// format. The frame never changes for the life of a connection, so the result
+// can be cached and reused for every update request instead of re-converting.
+func rawFramebufferBody(f *fb, pf pixelFormat) []byte {
 	conv := converter(pf)
 	bpp := int(pf.BPP / 8)
-	line := make([]byte, f.w*bpp)
+	body := make([]byte, f.w*f.h*bpp)
 
+	i := 0
 	for y := range f.h {
-		i := 0
 		for x := 0; x < f.w; x++ {
 			off := y*f.w*4 + x*4
 			r, g, b := f.data[off+2], f.data[off+1], f.data[off+0]
-			i += conv(line[i:], r, g, b)
-		}
-		_, err := c.Write(line[:i])
-		if err != nil {
-			return err
+			i += conv(body[i:], r, g, b)
 		}
 	}
+	return body[:i]
+}
 
-	return nil
+// writeRawFramebuffer emits a single Raw-encoded rectangle covering the whole
+// frame from an already-converted body.
+func writeRawFramebuffer(c net.Conn, w, h int, body []byte) error {
+	if _, err := c.Write([]byte{0, 0}); err != nil {
+		return err
+	}
+	if err := write16(c, 1); err != nil {
+		return err
+	}
+	if err := write16(c, 0, 0, uint16(w), uint16(h)); err != nil {
+		return err
+	}
+	if err := write32(c, 0); err != nil {
+		return err
+	}
+	_, err := c.Write(body)
+	return err
+}
+
+func sendFramebuffer(c net.Conn, f *fb, pf pixelFormat) error {
+	return writeRawFramebuffer(c, f.w, f.h, rawFramebufferBody(f, pf))
 }

@@ -162,6 +162,63 @@ func TestValidHandshakeStillSucceeds(t *testing.T) {
 	readRawUpdate(t, conn, src.w, src.h)
 }
 
+// RFB 3.7 has no SecurityResult for the None type: after the client selects it,
+// the server must pass straight to ServerInit. Sending the 3.8-only 4-byte
+// result would desync the client, shifting every ServerInit field by four bytes.
+func TestRFB37HandshakeSkipsSecurityResult(t *testing.T) {
+	src := makeTestFB(64, 48)
+	srv := startRawServer(t, src, 0)
+	conn := dial(t, srv)
+
+	mustRead(t, conn, make([]byte, 12)) // greeting
+	if _, err := conn.Write([]byte("RFB 003.007\n")); err != nil {
+		t.Fatalf("send version: %v", err)
+	}
+
+	offered := make([]byte, 2)
+	mustRead(t, conn, offered)
+	if offered[0] != 1 || offered[1] != secTypeNone {
+		t.Fatalf("security types: got %v want [1 %d]", offered, secTypeNone)
+	}
+	if _, err := conn.Write([]byte{secTypeNone}); err != nil { // pick None
+		t.Fatalf("pick security type: %v", err)
+	}
+	if _, err := conn.Write([]byte{1}); err != nil { // ClientInit, shared
+		t.Fatalf("client init: %v", err)
+	}
+
+	// The next bytes must be ServerInit, not a SecurityResult. If the server
+	// wrongly sent the 4-byte result first, width would read as 0.
+	head := make([]byte, 24)
+	mustRead(t, conn, head)
+	if w := binary.BigEndian.Uint16(head[0:2]); int(w) != src.w {
+		t.Fatalf("ServerInit width: got %d want %d (a SecurityResult likely leaked in)", w, src.w)
+	}
+	if h := binary.BigEndian.Uint16(head[2:4]); int(h) != src.h {
+		t.Fatalf("ServerInit height: got %d want %d", h, src.h)
+	}
+}
+
+// A 3.7 client that picks an unoffered type gets no reason-string result (a 3.8
+// feature); the connection is simply dropped.
+func TestRFB37BadSecurityTypeClosesWithoutResult(t *testing.T) {
+	srv := startRawServer(t, makeTestFB(32, 32), 0)
+	conn := dial(t, srv)
+
+	mustRead(t, conn, make([]byte, 12))
+	if _, err := conn.Write([]byte("RFB 003.007\n")); err != nil {
+		t.Fatalf("send version: %v", err)
+	}
+	mustRead(t, conn, make([]byte, 2))               // offered types
+	if _, err := conn.Write([]byte{2}); err != nil { // VNC Auth, not offered
+		t.Fatalf("pick security type: %v", err)
+	}
+
+	if _, err := io.ReadFull(conn, make([]byte, 1)); err == nil {
+		t.Fatal("expected the connection to be closed with no SecurityResult for RFB 3.7")
+	}
+}
+
 func TestConnLimiter(t *testing.T) {
 	// A nil limiter never refuses, so the feature can be switched off.
 	var unlimited *connLimiter

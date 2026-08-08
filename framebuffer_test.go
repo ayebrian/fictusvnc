@@ -49,6 +49,36 @@ func TestRawFramebufferRoundTrip(t *testing.T) {
 	}
 }
 
+// The 24bpp converter must honour the negotiated shifts and endianness like the
+// 32bpp path, not blindly emit R,G,B. A standard little-endian client would
+// otherwise see red and blue swapped.
+func TestConverter24bppHonorsPixelFormat(t *testing.T) {
+	const r, g, b = 0xAA, 0xBB, 0xCC
+
+	// Standard little-endian 24-bit: value = R<<16 | G<<8 | B, low 3 bytes.
+	le := pixelFormat{24, 24, 0, 1, 255, 255, 255, 16, 8, 0, [3]byte{}}
+	dst := make([]byte, 4)
+	if n := converter(le)(dst, r, g, b); n != 3 {
+		t.Fatalf("little-endian: wrote %d bytes, want 3", n)
+	}
+	// v = 0xAABBCC, little-endian low 3 bytes = CC, BB, AA (i.e. B, G, R).
+	if dst[0] != b || dst[1] != g || dst[2] != r {
+		t.Fatalf("little-endian 24bpp: got [%#02x %#02x %#02x] want [%#02x %#02x %#02x]",
+			dst[0], dst[1], dst[2], b, g, r)
+	}
+
+	// Big-endian keeps the high 3 bytes in MSB order: R, G, B.
+	be := pixelFormat{24, 24, 1, 1, 255, 255, 255, 16, 8, 0, [3]byte{}}
+	dst = make([]byte, 4)
+	if n := converter(be)(dst, r, g, b); n != 3 {
+		t.Fatalf("big-endian: wrote %d bytes, want 3", n)
+	}
+	if dst[0] != r || dst[1] != g || dst[2] != b {
+		t.Fatalf("big-endian 24bpp: got [%#02x %#02x %#02x] want [%#02x %#02x %#02x]",
+			dst[0], dst[1], dst[2], r, g, b)
+	}
+}
+
 func TestIPOverlay(t *testing.T) {
 	src := makeTestFB(120, 60) // band 0 (x<64) is solid 0x20,0x40,0x60
 	out := addIPOverlay(src, "203.0.113.7")

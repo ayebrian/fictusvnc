@@ -51,6 +51,16 @@ func supportedRFBVersion(major, minor int) bool {
 	return major > 3 || (major == 3 && minor >= 7)
 }
 
+// usesRFB38Handshake reports whether the negotiated version follows the RFB 3.8
+// handshake, where the server sends a SecurityResult even for the None security
+// type. RFB 3.7 has no such message and passes straight to initialisation, so
+// sending it there shifts every following field by four bytes and desyncs the
+// client. Anything newer than 3.8 (e.g. a client claiming 4.x) is treated as
+// 3.8, the latest flow this server knows.
+func usesRFB38Handshake(major, minor int) bool {
+	return major > 3 || (major == 3 && minor >= 8)
+}
+
 // writeSecurityFailure reports a failed handshake the way RFB 3.8 expects:
 // status 1 followed by a length-prefixed reason.
 func writeSecurityFailure(c net.Conn, reason string) error {

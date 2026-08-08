@@ -30,6 +30,12 @@ const (
 
 	zrleTileSize = 64
 
+	// maxPort is the highest valid TCP port. A start_port/end_port range is
+	// bounded by it so an out-of-range typo is rejected up front instead of
+	// silently failing to bind (or, for a huge value, driving a giant slice
+	// allocation in listenAddrs).
+	maxPort = 65535
+
 	// secTypeNone is the only security type this server offers.
 	secTypeNone = 1
 
@@ -172,10 +178,21 @@ func loadConfig(path string) (Config, []string, error) {
 				id, s.Image)
 		}
 
-		// A port range overrides whatever port sits in 'listen'.
-		if s.StartPort > 0 && s.EndPort > 0 && s.EndPort >= s.StartPort {
-			if _, port, err := net.SplitHostPort(s.Listen); err == nil && port != "" {
-				warn("server %q sets a port range, so the port %q in 'listen' is ignored", id, port)
+		// A port range overrides whatever port sits in 'listen'. Reject a
+		// range that is out of bounds or inverted rather than let it silently
+		// fail to bind (listenAddrs ignores such a range too).
+		if s.StartPort > 0 && s.EndPort > 0 {
+			switch {
+			case s.StartPort > maxPort || s.EndPort > maxPort:
+				warn("server %q port range %d–%d exceeds the maximum port %d, so the range is ignored",
+					id, s.StartPort, s.EndPort, maxPort)
+			case s.EndPort < s.StartPort:
+				warn("server %q has end_port %d below start_port %d, so the range is ignored",
+					id, s.EndPort, s.StartPort)
+			default:
+				if _, port, err := net.SplitHostPort(s.Listen); err == nil && port != "" {
+					warn("server %q sets a port range, so the port %q in 'listen' is ignored", id, port)
+				}
 			}
 		}
 	}

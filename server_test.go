@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/binary"
 	"io"
 	"log/slog"
@@ -57,6 +58,44 @@ func fbUpdateRequest(incremental byte) []byte {
 	msg[0] = msgFramebufferUpdateReq
 	msg[1] = incremental
 	return msg
+}
+
+// setPixelFormat builds a SetPixelFormat message carrying pf on the wire.
+func setPixelFormat(pf pixelFormat) []byte {
+	var body bytes.Buffer
+	body.Write([]byte{msgSetPixelFormat, 0, 0, 0}) // type + 3 padding
+	_ = binary.Write(&body, binary.BigEndian, pf)
+	return body.Bytes()
+}
+
+// setEncodings builds a SetEncodings message advertising the given encodings.
+func setEncodings(encs ...int32) []byte {
+	msg := make([]byte, 4+len(encs)*4)
+	msg[0] = msgSetEncodings
+	binary.BigEndian.PutUint16(msg[2:4], uint16(len(encs)))
+	for i, e := range encs {
+		binary.BigEndian.PutUint32(msg[4+i*4:], uint32(e))
+	}
+	return msg
+}
+
+// readRawUpdateBody consumes one raw FramebufferUpdate and returns its pixel
+// body, bpp bytes per pixel.
+func readRawUpdateBody(t *testing.T, conn net.Conn, w, h, bpp int) []byte {
+	t.Helper()
+	hdr := make([]byte, 4)
+	mustRead(t, conn, hdr)
+	if hdr[0] != 0 {
+		t.Fatalf("msg type: got %d want 0", hdr[0])
+	}
+	rect := make([]byte, 12)
+	mustRead(t, conn, rect)
+	if e := binary.BigEndian.Uint32(rect[8:12]); e != encRaw {
+		t.Fatalf("encoding: got %d want raw", e)
+	}
+	body := make([]byte, w*h*bpp)
+	mustRead(t, conn, body)
+	return body
 }
 
 // startTestServer spins up a listener backed by a single-image rotator and
@@ -149,6 +188,90 @@ func TestIncrementalRequestGetsNoUpdate(t *testing.T) {
 	}
 	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	readRawUpdate(t, conn, src.w, src.h)
+}
+
+// The encoded frame is cached because the framebuffer is immutable, but a
+// pixel-format change must invalidate that cache and re-encode. This also
+// exercises the 24bpp colour path end to end.
+func TestFrameCacheInvalidatesOnPixelFormatChange(t *testing.T) {
+	src := makeTestFB(64, 64)
+	conn := startTestServer(t, src)
+
+	// First update: default 32bpp little-endian, reproducing the BGRX layout.
+	if _, err := conn.Write(fbUpdateRequest(0)); err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	body32 := readRawUpdateBody(t, conn, src.w, src.h, 4)
+	off := (2*src.w + 2) * 4 // pixel (2,2), band 0: solid r,g,b = 0x20,0x40,0x60
+	if body32[off] != src.data[off] || body32[off+1] != src.data[off+1] || body32[off+2] != src.data[off+2] {
+		t.Fatalf("32bpp pixel (2,2): got [%#x %#x %#x] want [%#x %#x %#x]",
+			body32[off], body32[off+1], body32[off+2],
+			src.data[off], src.data[off+1], src.data[off+2])
+	}
+
+	// Switch to standard little-endian 24bpp; the cache must re-encode at 3 bytes.
+	pf24 := pixelFormat{24, 24, 0, 1, 255, 255, 255, 16, 8, 0, [3]byte{}}
+	if _, err := conn.Write(setPixelFormat(pf24)); err != nil {
+		t.Fatalf("set pixel format: %v", err)
+	}
+	if _, err := conn.Write(fbUpdateRequest(0)); err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	body24 := readRawUpdateBody(t, conn, src.w, src.h, 3)
+	p := (2*src.w + 2) * 3 // same pixel, 24bpp LE => [B,G,R]
+	if body24[p] != 0x60 || body24[p+1] != 0x40 || body24[p+2] != 0x20 {
+		t.Fatalf("24bpp pixel (2,2): got [%#x %#x %#x] want [0x60 0x40 0x20]",
+			body24[p], body24[p+1], body24[p+2])
+	}
+}
+
+// A ZRLE update served through the full session must decode correctly, and the
+// per-connection zlib stream must stay valid across repeated requests (the
+// second request is served from the cached payload).
+func TestZRLESessionUpdateDecodes(t *testing.T) {
+	src := makeTestFB(128, 96)
+	conn := startTestServer(t, src)
+
+	if _, err := conn.Write(setEncodings(encZRLE)); err != nil {
+		t.Fatalf("set encodings: %v", err)
+	}
+	if _, err := conn.Write(fbUpdateRequest(0)); err != nil {
+		t.Fatalf("request 1: %v", err)
+	}
+	if _, err := conn.Write(fbUpdateRequest(0)); err != nil {
+		t.Fatalf("request 2: %v", err)
+	}
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+
+	// The first rectangle decodes fully against the source.
+	got := decodeZRLEUpdate(t, conn)
+	if got.w != src.w || got.h != src.h {
+		t.Fatalf("dimensions: got %dx%d want %dx%d", got.w, got.h, src.w, src.h)
+	}
+	for i := range src.data {
+		if i%4 == 3 {
+			continue // pad byte
+		}
+		if got.data[i] != src.data[i] {
+			t.Fatalf("pixel byte %d: got %#02x want %#02x", i, got.data[i], src.data[i])
+		}
+	}
+
+	// The second update must carry valid ZRLE framing on the same stream.
+	hdr := make([]byte, 4)
+	mustRead(t, conn, hdr)
+	rect := make([]byte, 12)
+	mustRead(t, conn, rect)
+	if e := binary.BigEndian.Uint32(rect[8:12]); e != encZRLE {
+		t.Fatalf("second update encoding: got %d want ZRLE", e)
+	}
+	zlen := make([]byte, 4)
+	mustRead(t, conn, zlen)
+	if binary.BigEndian.Uint32(zlen) == 0 {
+		t.Fatal("second ZRLE update has an empty payload")
+	}
 }
 
 // An unknown message has an unknown length, so the stream cannot be resynced

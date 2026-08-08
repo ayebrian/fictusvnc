@@ -82,6 +82,15 @@ func (e cpixelEncoder) pack(dst []byte, r, g, b uint8) {
 // subencoding (1 CPIXEL) and the rest use "raw" (subencoding 0). Everything
 // is fed through the connection's continuous zlib stream.
 func sendFramebufferZRLE(c net.Conn, f *fb, enc cpixelEncoder, z *zrleStream) error {
+	return writeFramebufferZRLE(c, f.w, f.h, encodeZRLETiles(f, enc), z)
+}
+
+// writeFramebufferZRLE sends a ZRLE rectangle from an already-built (pre-zlib)
+// tile payload, feeding it through the connection's continuous zlib stream. The
+// payload depends only on the frame and pixel format, both immutable for a
+// connection, so the caller can cache it across update requests; the zlib write
+// and flush still run every time to keep the stream continuous.
+func writeFramebufferZRLE(c net.Conn, w, h int, payload []byte, z *zrleStream) error {
 	// FramebufferUpdate header: msg-type(0), padding, 1 rectangle.
 	if _, err := c.Write([]byte{0, 0}); err != nil {
 		return err
@@ -89,14 +98,12 @@ func sendFramebufferZRLE(c net.Conn, f *fb, enc cpixelEncoder, z *zrleStream) er
 	if err := write16(c, 1); err != nil {
 		return err
 	}
-	if err := write16(c, 0, 0, uint16(f.w), uint16(f.h)); err != nil {
+	if err := write16(c, 0, 0, uint16(w), uint16(h)); err != nil {
 		return err
 	}
 	if err := write32(c, encZRLE); err != nil {
 		return err
 	}
-
-	payload := encodeZRLETiles(f, enc)
 
 	z.buf.Reset()
 	if _, err := z.zw.Write(payload); err != nil {

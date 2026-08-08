@@ -85,6 +85,20 @@ func runCheck(w io.Writer, cfg Config, warnings []string, baseDir, configPath st
 		fmt.Fprintf(w, "      banner: %s\n", describeOverlay(cfg.Global.overlayFor(s)))
 	}
 
+	// Logging is otherwise validated only by setupLogging, which runs on a real
+	// start, long after --check has exited. Mirror its checks so a config that
+	// provably cannot boot is not reported as usable.
+	if _, err := parseLevel(cfg.Logging.Level); err != nil {
+		fmt.Fprintf(w, "  error: %v\n", err)
+		problems++
+	}
+	switch strings.ToLower(strings.TrimSpace(cfg.Logging.Format)) {
+	case "", "json", "text":
+	default:
+		fmt.Fprintf(w, "  error: unknown log format %q (want json or text)\n", cfg.Logging.Format)
+		problems++
+	}
+
 	limit := "unlimited"
 	if cfg.Global.MaxConnections > 0 {
 		limit = fmt.Sprint(cfg.Global.MaxConnections)

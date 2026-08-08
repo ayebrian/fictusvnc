@@ -206,6 +206,58 @@ show_client_ip = true
 	}
 }
 
+// A port range outside 1..65535, or an inverted one, must warn rather than be
+// silently accepted (and then silently fail to bind, or drive a huge alloc).
+func TestPortRangeValidationWarns(t *testing.T) {
+	t.Run("above max warns", func(t *testing.T) {
+		_, warnings, err := loadConfig(writeConfig(t, `
+[server.a]
+listen = ":5900"
+image = "d.png"
+start_port = 5900
+end_port = 70000
+`))
+		if err != nil {
+			t.Fatalf("loadConfig: %v", err)
+		}
+		if !hasWarning(warnings, "exceeds the maximum port") {
+			t.Errorf("expected an out-of-range port warning; got %v", warnings)
+		}
+	})
+
+	t.Run("inverted range warns", func(t *testing.T) {
+		_, warnings, err := loadConfig(writeConfig(t, `
+[server.a]
+listen = ":5900"
+image = "d.png"
+start_port = 5912
+end_port = 5910
+`))
+		if err != nil {
+			t.Fatalf("loadConfig: %v", err)
+		}
+		if !hasWarning(warnings, "below start_port") {
+			t.Errorf("expected an inverted-range warning; got %v", warnings)
+		}
+	})
+
+	t.Run("valid range does not warn about bounds", func(t *testing.T) {
+		_, warnings, err := loadConfig(writeConfig(t, `
+[server.a]
+listen = "0.0.0.0"
+image = "d.png"
+start_port = 5900
+end_port = 5902
+`))
+		if err != nil {
+			t.Fatalf("loadConfig: %v", err)
+		}
+		if hasWarning(warnings, "exceeds the maximum port") || hasWarning(warnings, "below start_port") {
+			t.Errorf("a valid range must not warn about bounds; got %v", warnings)
+		}
+	})
+}
+
 func TestBoolOr(t *testing.T) {
 	tr, fa := true, false
 	if got := boolOr(nil, true); !got {
@@ -261,6 +313,21 @@ func TestListenAddrs(t *testing.T) {
 		{
 			name: "inverted range is not a range",
 			cfg:  ServerConfig{Listen: "0.0.0.0:5900", StartPort: 5910, EndPort: 5900},
+			want: []string{"0.0.0.0:5900"},
+		},
+		{
+			name: "range at the max boundary is honoured",
+			cfg:  ServerConfig{Listen: "0.0.0.0", StartPort: 65534, EndPort: 65535},
+			want: []string{"0.0.0.0:65534", "0.0.0.0:65535"},
+		},
+		{
+			name: "out-of-range end_port is not expanded",
+			cfg:  ServerConfig{Listen: "0.0.0.0:5900", StartPort: 65530, EndPort: 70000},
+			want: []string{"0.0.0.0:5900"},
+		},
+		{
+			name: "an absurd end_port never allocates a giant slice",
+			cfg:  ServerConfig{Listen: "0.0.0.0:5900", StartPort: 5900, EndPort: 2000000000},
 			want: []string{"0.0.0.0:5900"},
 		},
 	}
