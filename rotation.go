@@ -2,7 +2,7 @@ package main
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 	"math/rand"
 	"path/filepath"
 	"sync/atomic"
@@ -22,19 +22,29 @@ type WeightedImageData struct {
 	path   string
 }
 
-func NewImageRotator(config ServerConfig) (*ImageRotator, error) {
+// NewImageRotator loads a server's images. Relative image paths are resolved
+// against baseDir (the config file's directory) rather than the process
+// working directory, so the same config works from a shell and from systemd.
+func NewImageRotator(config ServerConfig, baseDir string) (*ImageRotator, error) {
 	rotator := &ImageRotator{
 		mode: config.RotationMode,
+	}
+
+	resolve := func(p string) string {
+		if filepath.IsAbs(p) {
+			return p
+		}
+		return filepath.Join(baseDir, defaultImageDir, p)
 	}
 
 	// Load images with weights
 	if len(config.Images) > 0 {
 		// Use weighted image array
 		for _, img := range config.Images {
-			imagePath := filepath.Join(defaultImageDir, img.Path)
+			imagePath := resolve(img.Path)
 			fb, err := loadImage(imagePath)
 			if err != nil {
-				log.Printf("[WARN] Failed to load image %s: %v", imagePath, err)
+				slog.Warn("failed to load image, skipping", "path", imagePath, "error", err)
 				continue
 			}
 
@@ -52,7 +62,7 @@ func NewImageRotator(config ServerConfig) (*ImageRotator, error) {
 		}
 	} else if config.Image != "" {
 		// Fallback to single image
-		imagePath := filepath.Join(defaultImageDir, config.Image)
+		imagePath := resolve(config.Image)
 		fb, err := loadImage(imagePath)
 		if err != nil {
 			return nil, fmt.Errorf("failed to load image %s: %v", imagePath, err)
@@ -72,72 +82,66 @@ func NewImageRotator(config ServerConfig) (*ImageRotator, error) {
 		return nil, fmt.Errorf("no valid images loaded")
 	}
 
-	log.Printf("[INFO] Loaded %d images for rotation (mode: %s)", len(rotator.images), rotator.mode)
+	slog.Debug("loaded images", "count", len(rotator.images), "rotation_mode", rotator.modeName())
 	return rotator, nil
 }
 
-func (r *ImageRotator) GetImage() *fb {
-	if len(r.images) == 1 {
-		return r.images[0].fb
+// modeName reports the effective rotation mode, resolving the empty and
+// unrecognised settings to the "random" default that GetImage actually uses.
+func (r *ImageRotator) modeName() string {
+	if r.mode == "sequential" {
+		return "sequential"
 	}
-
-	switch r.mode {
-	case "random":
-		return r.getRandomWeighted()
-	case "sequential":
-		return r.getSequential()
-	default:
-		// Default to random weighted
-		return r.getRandomWeighted()
-	}
+	return "random"
 }
 
-func (r *ImageRotator) getRandomWeighted() *fb {
+func (r *ImageRotator) GetImage() *fb { return r.pick().fb }
+
+// pick selects the entry to serve next according to the rotation mode.
+func (r *ImageRotator) pick() *WeightedImageData {
+	if len(r.images) == 1 {
+		return &r.images[0]
+	}
+
+	if r.mode == "sequential" {
+		return r.getSequential()
+	}
+	// Everything else, including an empty or unrecognised mode, is weighted
+	// random.
+	return r.getRandomWeighted()
+}
+
+func (r *ImageRotator) getRandomWeighted() *WeightedImageData {
 	if r.totalWeight == 0 {
-		return r.images[0].fb
+		return &r.images[0]
 	}
 
 	// Generate random number from 1 to totalWeight
 	target := rand.Intn(r.totalWeight) + 1
 	current := 0
 
-	for _, img := range r.images {
-		current += img.weight
+	for i := range r.images {
+		current += r.images[i].weight
 		if target <= current {
-			return img.fb
+			return &r.images[i]
 		}
 	}
 
 	// Fallback (should not happen)
-	return r.images[0].fb
+	return &r.images[0]
 }
 
-func (r *ImageRotator) getSequential() *fb {
-	idx := atomic.LoadInt64(&r.current) % int64(len(r.images))
-	atomic.AddInt64(&r.current, 1)
-	return r.images[idx].fb
+func (r *ImageRotator) getSequential() *WeightedImageData {
+	// Claim the slot and advance in one atomic step; a separate Load+Add
+	// hands the same image to concurrent connections.
+	idx := (atomic.AddInt64(&r.current, 1) - 1) % int64(len(r.images))
+	return &r.images[idx]
 }
 
-func (r *ImageRotator) GetImageForConnection() *fb {
+// GetImageForConnection picks the image for a new connection and reports its
+// configured path so the connection record can name what the client saw.
+func (r *ImageRotator) GetImageForConnection() (*fb, string) {
 	atomic.AddInt64(&r.connections, 1)
-	return r.GetImage()
-}
-
-func (r *ImageRotator) GetStats() map[string]interface{} {
-	stats := make(map[string]interface{})
-	stats["mode"] = r.mode
-	stats["total_images"] = len(r.images)
-	stats["total_connections"] = atomic.LoadInt64(&r.connections)
-	stats["current_index"] = atomic.LoadInt64(&r.current)
-
-	imageStats := make([]map[string]interface{}, len(r.images))
-	for i, img := range r.images {
-		imageStats[i] = map[string]interface{}{
-			"path":   img.path,
-			"weight": img.weight,
-		}
-	}
-	stats["images"] = imageStats
-
-	return stats
+	e := r.pick()
+	return e.fb, e.path
 }

@@ -1,0 +1,68 @@
+name: Dev Build
+
+# Publishes a rolling pre-release from main on every push. The "dev" tag is
+# moved to the newest commit, so the release always holds the latest build and
+# does not accumulate one entry per commit. Version and archives carry the
+# short commit hash.
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  # A newer push supersedes an in-flight dev build; only the latest matters.
+  group: dev-build
+  cancel-in-progress: true
+
+jobs:
+  dev-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.26"
+
+      - name: Derive version
+        id: ver
+        run: |
+          base=$(grep -oP 'appVersion\s*=\s*"\K[^"]+' config.go)
+          sha=$(git rev-parse --short HEAD)
+          # "g" prefix keeps the pre-release identifier alphanumeric (a hash of
+          # only digits would otherwise be an invalid semver numeric field).
+          echo "version=${base}-dev.g${sha}" >> "$GITHUB_OUTPUT"
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+
+      - name: Build binaries
+        run: |
+          chmod +x ./build.sh
+          VERSION="${{ steps.ver.outputs.version }}" ./build.sh
+
+      - name: Package release bundles
+        run: |
+          chmod +x ./package.sh
+          ./package.sh
+
+      - name: Publish rolling dev pre-release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: dev
+          name: "Dev build ${{ steps.ver.outputs.sha }}"
+          body: |
+            Automated pre-release built from `main` at ${{ github.sha }}.
+
+            Version string: `${{ steps.ver.outputs.version }}`
+
+            ⚠️ Rolling build — the `dev` tag and these assets are overwritten on
+            every push to `main`. Use a tagged release for anything stable.
+          prerelease: true
+          # Stable asset names, so each run overwrites the previous build.
+          files: |
+            build/*.tar.gz
+            build/*.zip
