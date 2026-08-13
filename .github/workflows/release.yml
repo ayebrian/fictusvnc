@@ -1,5 +1,11 @@
 name: Release
 
+# Escape hatch for hand-pushed tags — releasing a commit that is not the head
+# of main, or re-cutting a version. The usual path is Stable Release, which
+# tags main automatically when appVersion changes.
+#
+# A tag pushed by Stable Release does not trigger this workflow: GitHub does not
+# re-trigger on refs created with the default token, so the two never race.
 on:
   push:
     tags:
@@ -12,6 +18,10 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          # Full history and tags, so the changelog can diff against the
+          # previous release.
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@v7
@@ -29,6 +39,24 @@ jobs:
           chmod +x ./package.sh
           ./package.sh
 
+      - name: Write the release notes
+        if: github.actor != 'nektos/act'
+        run: |
+          chmod +x ./changelog.sh
+          # Nearest release tag before this one; on the first release there is
+          # none and the range is the whole history.
+          prev=$(git describe --tags --abbrev=0 --match 'v*' "${GITHUB_REF_NAME}^" 2>/dev/null || true)
+          range="${GITHUB_REF_NAME}"
+          [ -n "$prev" ] && range="${prev}..${GITHUB_REF_NAME}"
+          echo "Writing notes for ${range}"
+          ./changelog.sh "$range" > RELEASE_NOTES.md
+          {
+            echo
+            echo "---"
+            echo
+            echo "Built from \`${GITHUB_SHA}\`. Version string: \`${GITHUB_REF_NAME#v}\`."
+          } >> RELEASE_NOTES.md
+
       - name: Create Release
         id: create_release
         if: github.ref_type == 'tag' && github.actor != 'nektos/act'
@@ -38,5 +66,6 @@ jobs:
             build/*.tar.gz
             build/*.zip
           name: ${{ github.ref_name }}
+          body_path: RELEASE_NOTES.md
           draft: false
           prerelease: false
