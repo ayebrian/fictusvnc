@@ -1,3 +1,5 @@
+
+
 # FictusVNC Server
 
 A minimal VNC server that serves a static image.
@@ -95,8 +97,8 @@ Example TOML configuration file:
 ```toml
 [[server]]
 listen = "127.0.0.1"
-start_port = "5900" # optional
-end_port = "5910" # optional
+start_port = 5900 # optional
+end_port = 5910 # optional
 server_name = "Test Server" # optional
 image = "test.png"
 ```
@@ -106,4 +108,3 @@ Note: You can have multiple [[servers]] sections in one config file.
 ## License
 
 This project is licensed under the terms specified in the [LICENSE](LICENSE) file.
-
