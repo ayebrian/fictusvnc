@@ -1,0 +1,76 @@
+# Example configuration with image rotation and weights
+
+[global]
+name = "FictusVNC"
+branding = true
+show_client_ip = false
+
+# Banner defaults. Every one of these three can be overridden per server —
+# see [server.static_server] at the bottom.
+#   show_rdns — reverse-DNS name of the client. Costs one PTR lookup per
+#               client that requests a frame (700ms timeout) and tells the
+#               client's DNS operator that you looked them up.
+#   show_time — connection timestamp in the server's local timezone.
+show_rdns = false
+show_time = false
+
+# Maximum clients served at once, across every listener. Each connection can
+# hold a private framebuffer copy when the info banner is on, so an unbounded
+# server is easy to exhaust. 0 disables the cap.
+max_connections = 512
+
+# Logging. The whole section is optional.
+[logging]
+# debug | info | warn | error
+# debug adds per-message protocol detail; info keeps one record per connection.
+level = "info"
+
+# json | text
+# json is what a log shipper (Vector, Filebeat, Fluent Bit, Promtail) expects;
+# text is easier to read when running the server by hand.
+format = "json"
+
+# stdout | stderr | path to a file
+# Leave it on stdout under systemd or Docker — the supervisor already captures
+# and rotates it. A file path is for running without one; send SIGHUP after
+# rotating and the server reopens it.
+output = "stdout"
+
+[server.random_server]
+listen = "0.0.0.0:5900"
+name = "Random Rotation Server"
+rotation_mode = "random"
+images = [
+  { path = "desktop_normal.png", weight = 50 },
+  { path = "desktop_work.png", weight = 30 },
+  { path = "desktop_error.png", weight = 5 },
+  { path = "desktop_maintenance.png", weight = 15 },
+]
+
+[server.boot_sequence]
+listen = "0.0.0.0:5902"
+name = "Boot Sequence"
+rotation_mode = "sequential"
+images = [
+  { path = "boot_bios.png" },
+  { path = "boot_loading.png" },
+  { path = "login_screen.png" },
+  { path = "desktop_ready.png" },
+]
+
+# Port range example - runs on multiple ports with same image
+[server.multi_port]
+listen = "0.0.0.0"
+start_port = 5910
+end_port = 5915
+name = "Multi-Port Server"
+image = "default.png"
+
+[server.static_server]
+listen = "0.0.0.0:5903"
+name = "Static Server"
+image = "default.png"
+# Per-server banner overrides. An unset key inherits [global]; a set one wins,
+# so an explicit false switches a globally enabled line back off.
+show_client_ip = true
+show_time = true

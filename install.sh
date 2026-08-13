@@ -20,12 +20,14 @@ echo -e "${GREEN}⬇️  Downloading dependencies...${RESET}"
 go mod tidy
 
 echo -e "${GREEN}🔨 Building in '$MODE' mode...${RESET}"
-FLAGS=""
+FLAGS=()
 if [[ "$MODE" == "release" ]]; then
-  FLAGS=(-ldflags=-s -w)
+  FLAGS=(-ldflags="-s -w")
 fi
 
-go build $FLAGS -o fictusvnc main.go
+# Build the whole package: the sources are split across several files, so
+# naming main.go alone fails to compile.
+go build "${FLAGS[@]}" -o fictusvnc .
 
 echo -e "${GREEN}✅ Build complete: ./fictusvnc${RESET}"
 echo ""
