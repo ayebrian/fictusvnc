@@ -527,6 +527,31 @@ All release targets (Linux / Windows / macOS, amd64 / arm64 / 386) into `build/`
 ./build.sh
 ```
 
+## Releases
+
+Two release streams run off `main`:
+
+| Release | Trigger | Contents |
+| --- | --- | --- |
+| **Dev build** (`dev`, pre-release) | Every push to `main` | The latest commit, version `<appVersion>-dev.g<sha>`. The tag moves, so the assets are always the newest build. |
+| **Stable** (`v<appVersion>`) | A push to `main` whose `appVersion` has no tag yet | Tagged, versioned archives for every platform. |
+
+Cutting a stable release is just bumping `appVersion` in `config.go` and merging
+to `main`: the workflow tests the merged tree, builds every target, writes the
+release notes, tags the commit and publishes. The tag is the gate, so pushing
+again without a bump changes nothing — a version is never released twice.
+
+The release notes are the commit log since the previous tag, one bullet per
+commit (`changelog.sh`). Run it by hand to preview what the next release would
+say:
+
+```bash
+./changelog.sh v2.1.0..HEAD
+```
+
+Hand-pushed `v*` tags still work as an escape hatch — for releasing a commit
+that is not the head of `main` — and produce the same notes.
+
 ---
 
 ## License

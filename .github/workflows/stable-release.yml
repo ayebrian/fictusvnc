@@ -1,0 +1,106 @@
+name: Stable Release
+
+# Cuts a stable release straight from main, alongside the rolling dev build.
+#
+# The version constant in config.go is the trigger: on every push to main, if
+# there is no v<appVersion> tag yet, this builds that version, writes the
+# release notes, tags the commit and publishes. Bumping appVersion is therefore
+# the whole release ritual — and because the tag is the gate, a version is never
+# released twice.
+#
+# The notes are the commit log since the previous tag (see changelog.sh).
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  # Unlike the dev build, an in-flight publish is never cancelled — a partially
+  # uploaded release is worse than one that waits its turn.
+  group: stable-release
+  cancel-in-progress: false
+
+jobs:
+  stable-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Full history and tags: both the release gate and the changelog range
+          # are derived from them.
+          fetch-depth: 0
+
+      - name: Decide whether this version still needs a release
+        id: check
+        run: |
+          version=$(grep -oP 'appVersion\s*=\s*"\K[^"]+' config.go)
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${version}" >> "$GITHUB_OUTPUT"
+          if git ls-remote --exit-code --tags origin "refs/tags/v${version}" >/dev/null 2>&1; then
+            echo "v${version} is already tagged — nothing to release."
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "v${version} has no tag yet — releasing it."
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Go
+        if: steps.check.outputs.release == 'true'
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.26"
+
+      - name: Test
+        # CI already ran on the pull request, but a published binary is worth a
+        # second look at the merged tree.
+        if: steps.check.outputs.release == 'true'
+        run: go test -race ./...
+
+      - name: Build binaries
+        if: steps.check.outputs.release == 'true'
+        run: |
+          chmod +x ./build.sh
+          VERSION="${{ steps.check.outputs.version }}" ./build.sh
+
+      - name: Package release bundles
+        if: steps.check.outputs.release == 'true'
+        run: |
+          chmod +x ./package.sh
+          ./package.sh
+
+      - name: Write the release notes
+        if: steps.check.outputs.release == 'true'
+        run: |
+          chmod +x ./changelog.sh
+          # Nearest reachable release tag, so the notes cover exactly what has
+          # landed since the last one. On the very first release there is none,
+          # and the range is the whole history.
+          prev=$(git describe --tags --abbrev=0 --match 'v*' HEAD 2>/dev/null || true)
+          range="HEAD"
+          [ -n "$prev" ] && range="${prev}..HEAD"
+          echo "Writing notes for ${range}"
+          ./changelog.sh "$range" > RELEASE_NOTES.md
+          {
+            echo
+            echo "---"
+            echo
+            echo "Built from \`${GITHUB_SHA}\`. Version string: \`${{ steps.check.outputs.version }}\`."
+          } >> RELEASE_NOTES.md
+
+      - name: Publish the release
+        if: steps.check.outputs.release == 'true'
+        uses: softprops/action-gh-release@v3
+        with:
+          # The tag does not exist yet — the action creates it on this commit.
+          tag_name: ${{ steps.check.outputs.tag }}
+          name: ${{ steps.check.outputs.tag }}
+          body_path: RELEASE_NOTES.md
+          draft: false
+          prerelease: false
+          files: |
+            build/*.tar.gz
+            build/*.zip
